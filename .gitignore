@@ -1,0 +1,9 @@
+node_modules/
+*.log
+.coverage/
+local-presets/
+
+.tavern-entry.mjs
+.tavern-status.json
+.tavern-restart.json
+.tavern-disabled
