@@ -140,4 +140,9 @@ test('regeneration activates only empty or regenerate prompt triggers', () => {
   const text = compilePreset(doc, materials()).request.messages.map(message => message.content).join('\n');
   assert.doesNotMatch(text, /trigger:normal-only|trigger:continue-only/);
   for (const name of ['regen-only', 'both', 'empty']) assert.ok(text.includes('trigger:' + name));
+  const current = compilePreset(doc, { ...materials(), trigger: 'normal', target: { kind: 'generate', turn: 2 } });
+  const normalText = current.request.messages.map(message => message.content).join('\n');
+  assert.doesNotMatch(normalText, /trigger:regen-only|trigger:continue-only/);
+  for (const name of ['normal-only', 'both', 'empty']) assert.ok(normalText.includes('trigger:' + name));
+  assert.equal(current.report.trigger, 'normal');
 });

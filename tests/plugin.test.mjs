@@ -10,7 +10,7 @@ const material = { schemaVersion: 1, gameId: 'test', target: { turn: 2 }, card: 
   persona: { name: '玩家' }, worldbook: { context: '' }, writingRequirements: [], history: [{ role: 'assistant', text: '开场白' }],
   input: { raw: '本轮输入', projected: '本轮输入' }, beforeState: {}, completeness: { history: 'all-visible' } };
 function fixture(ready = true) {
-  let saved, provider, latest, respond;
+  let saved, provider, generator, latest, respond;
   const handlers = new Map(), controller = new AbortController();
   const tavern = {
     readPluginData: async () => structuredClone(saved),
@@ -19,6 +19,7 @@ function fixture(ready = true) {
     onGameRemoved() {},
   };
   if (ready) Object.assign(tavern, {
+    bodyGenerator: value => { generator = value; },
     bodyRegenerator: value => { provider = value; },
     startBodyRegeneration: async input => { latest = { id: 'job', status: 'queued', ...input }; return latest; },
     bodyRegenerationStatus: async () => latest,
@@ -34,8 +35,8 @@ function fixture(ready = true) {
       } };
   } };
   apply({ tavern, llm, agents: { get: () => ({ model: { current: () => ({ provider: 'fixture', model: 'story', reasoningEffort: 'high' }) } }) } });
-  return { handlers, tavern, get provider() { return provider; }, call: (key, value) => handlers.get('dsh-tavern-stcontext/' + key)(value),
-    generate: response => { respond = response; return provider.generate({ materials: material, signal: controller.signal, get runIsolated() { assert.fail('must use DSH directly, including on an older host'); } }); } };
+  return { handlers, tavern, get provider() { return provider; }, get generator() { return generator; }, call: (key, value) => handlers.get('dsh-tavern-stcontext/' + key)(value),
+    generate: (response, current = false) => { respond = response; return (current ? generator : provider).generate({ materials: current ? { ...material, trigger: 'normal', target: { kind: 'generate', turn: 2 } } : material, signal: controller.signal, get runIsolated() { assert.fail('must use DSH directly, including on an older host'); } }); } };
 }
 async function importPreset(f) {
   const text = JSON.stringify(minimal), { id } = await f.call('upload/begin', { name: 'example.json', size: text.length });
@@ -70,4 +71,13 @@ test('unsupported hosts still allow import but cannot start a fake regeneration'
 test('model failure never returns a candidate or runs output replacement', async () => {
   const f = fixture(); await importPreset(f);
   await assert.rejects(f.generate(async () => { throw new Error('model failure'); }), /model failure/);
+});
+
+test('current-turn generation and regeneration share one compiler and one output pass', async () => {
+  const f = fixture(); await importPreset(f);
+  assert.equal(f.generator.generate, f.provider.generate);
+  assert.equal((await f.call('config')).generationReady, true);
+  assert.equal((await f.generate(async () => ({ text: 'X' }), true)).text, 'XX');
+  const preview = await f.call('request', { gameId: 'test' });
+  assert.equal(preview.report.trigger, 'normal');
 });

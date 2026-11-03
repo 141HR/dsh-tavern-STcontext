@@ -66,7 +66,7 @@ window.__ModuleLoader__.load({
             let offset = 0, chunks = [], info;
             do {
               const part = await call('request', { gameId, offset });
-              if (!part) throw new Error('本次会话还没有已编译请求，请先重生成');
+              if (!part) throw new Error('本次会话还没有已编译请求，请先生成正文');
               if (info && info.createdAt !== part.createdAt) throw new Error('请求已更新，请重新打开预览');
               info = part; chunks.push(part.text); offset += part.text.length;
             } while (offset < info.total);
@@ -82,7 +82,7 @@ window.__ModuleLoader__.load({
           ];
           return h('div', { style: { padding: 16, maxWidth: 900, margin: '0 auto', color: 'inherit', overflowY: 'auto', maxHeight: close ? '94vh' : undefined } },
             h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 } },
-              h('div', null, h('h2', { style: { margin: '0 0 6px' } }, 'STcontext'), h('p', { style: { margin: '0 0 14px', opacity: .75 } }, '导入预设 · 完整可见历史 · 独立重生成')),
+              h('div', null, h('h2', { style: { margin: '0 0 6px' } }, 'STcontext'), h('p', { style: { margin: '0 0 14px', opacity: .75 } }, '导入预设 · 完整可见历史 · 正文生成与重生成')),
               close && h('button', { style: button, onClick: close }, '关闭')),
             error && h('p', { role: 'alert', style: { color: '#dc6c65', whiteSpace: 'pre-wrap' } }, error),
             notice && h('p', { role: 'status' }, notice),
@@ -111,6 +111,7 @@ window.__ModuleLoader__.load({
               h('button', { style: { ...button, marginTop: 12 }, disabled: busy, onClick: () => act(async () => { await call('settings', settings); await refresh(); setNotice('设置已保存'); }) }, '保存设置')),
             h('section', { style: box },
               h('strong', null, '正文重生成'),
+              config?.generationReady && h('p', null, '自动生成新正文：在「设置 → DSH Tavern → 剧情」选择 STcontext，再将正文生成方式设为「通过 Tool Call 调用插件」。当前面板仍可手动重生成最新正文。'),
               h('p', null, status ? (labels[phase] || phase) : '尚未开始'),
               status?.result?.warning && h('p', { role: 'status', style: { whiteSpace: 'pre-wrap' } }, status.result.warning),
               status?.result?.settlementStatus === 'failed' && h('p', { role: 'status' }, '新正文已保留，后台结算失败。请在宿主中重试结算。'),

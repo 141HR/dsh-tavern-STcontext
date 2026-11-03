@@ -1,9 +1,9 @@
 {
   "name": "dsh-tavern-STcontext",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "导入 SillyTavern 预设，使用完整可见历史独立重生成正文。",
+  "description": "导入 SillyTavern 预设，使用完整可见历史生成或重生成正文。",
   "exports": {
     ".": "./index.mjs",
     "./client": "./client.js"

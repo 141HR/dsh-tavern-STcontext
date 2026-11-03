@@ -14,7 +14,7 @@ export function apply(ctx) {
   const capable = () => typeof ctx.tavern.bodyRegenerator === 'function' && typeof ctx.tavern.startBodyRegeneration === 'function';
   function requireHost() { if (!capable()) throw new Error('当前宿主缺少插件重生成接口，请先更新 DSH Tavern'); }
   const handle = (key, callback) => ctx.tavern.handle(PREFIX + '/' + key, callback);
-  handle('config', async () => ({ ...(await store.list()), hostReady: capable() }));
+  handle('config', async () => ({ ...(await store.list()), hostReady: capable(), generationReady: typeof ctx.tavern.bodyGenerator === 'function' }));
   handle('upload/begin', input => store.begin(input));
   handle('upload/chunk', input => store.chunk(input));
   handle('upload/finish', input => store.finish(input));
@@ -43,22 +43,22 @@ export function apply(ctx) {
     return { createdAt: item.createdAt, report: item.report, total: item.json.length, offset, text: item.json.slice(offset, offset + 60000) };
   });
   if (typeof ctx.tavern.onGameRemoved === 'function') ctx.tavern.onGameRemoved(({ gameId }) => previews.delete(gameId));
-  if (!capable()) return;
-  ctx.tavern.bodyRegenerator({
-    name: PROVIDER, title: 'STcontext 重生成',
-    async generate({ materials, signal }) {
-      const active = await store.active();
-      signal?.throwIfAborted();
-      const compiled = await runCompiler('compile', { document: active.document, materials, settings: active.settings }, { signal });
-      const report = { ...compiled.report, preset: active.name, presetDigest: compiled.presetDigest, historyMessages: compiled.historyMessages };
-      const json = JSON.stringify({ report, logicalMessages: compiled.logicalMessages, request: compiled.request }, null, 2);
-      previews.delete(materials.gameId);
-      previews.set(materials.gameId, { json, report, createdAt: Date.now() });
-      while (previews.size > 3) previews.delete(previews.keys().next().value);
-      const response = await generateBody({ gameId: materials.gameId, request: compiled.request, signal });
-      signal?.throwIfAborted();
-      const result = await runCompiler('output', { document: active.document, response, toolName: compiled.toolName }, { signal });
-      return { ...result, metadata: { ...result.metadata, preset: active.name, protocol: report.protocol } };
-    },
-  });
+  async function generate({ materials, signal }) {
+    const active = await store.active();
+    signal?.throwIfAborted();
+    const compiled = await runCompiler('compile', { document: active.document, materials, settings: active.settings }, { signal });
+    const report = { ...compiled.report, preset: active.name, presetDigest: compiled.presetDigest, historyMessages: compiled.historyMessages };
+    const json = JSON.stringify({ report, logicalMessages: compiled.logicalMessages, request: compiled.request }, null, 2);
+    previews.delete(materials.gameId);
+    previews.set(materials.gameId, { json, report, createdAt: Date.now() });
+    while (previews.size > 3) previews.delete(previews.keys().next().value);
+    const response = await generateBody({ gameId: materials.gameId, request: compiled.request, signal });
+    signal?.throwIfAborted();
+    const result = await runCompiler('output', { document: active.document, response, toolName: compiled.toolName }, { signal });
+    return { ...result, metadata: { ...result.metadata, preset: active.name, protocol: report.protocol } };
+  }
+  if (capable()) ctx.tavern.bodyRegenerator({ name: PROVIDER, title: 'STcontext 重生成', generate });
+  if (typeof ctx.tavern.bodyGenerator === 'function') {
+    ctx.tavern.bodyGenerator({ name: PROVIDER, title: 'STcontext', generate });
+  }
 }
