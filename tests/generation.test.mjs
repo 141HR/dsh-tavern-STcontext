@@ -5,7 +5,7 @@ import { createDshGeneration, selectGenerationModel } from '../lib/generation.mj
 
 function harness(chunks, capacity = 128000) {
   const sent = []
-  const run = createDshGeneration({ selection: async () => ({ provider: 'test', model: 'story' }),
+  const run = createDshGeneration({
     llm: { async prepareCall(config, _signal, configure) {
       const { provider, model, ...controls } = config
       return { config: { ...configure(controls, { context: { contextWindow: capacity } }), provider, model },
@@ -13,7 +13,7 @@ function harness(chunks, capacity = 128000) {
     } } })
   return { sent, run: request => run({ gameId: 'game', request }) }
 }
-const base = { messages: [{ role: 'system', content: '写作要求' }, { role: 'user', content: '完整历史' }], maxTokens: 500 }
+const base = { model: { provider: 'test', model: 'story' }, messages: [{ role: 'system', content: '写作要求' }, { role: 'user', content: '完整历史' }], maxTokens: 500 }
 const tool = { name: 'return_body', description: '全部上下文', parameters: { type: 'object', properties: { text: { type: 'string' } } } }
 
 test('isolated generation sends exact messages and tool descriptions without adding session history', async () => {
@@ -51,7 +51,7 @@ test('a cancelled request never starts the provider', async () => {
   let started = false
   const controller = new AbortController()
   controller.abort(new Error('取消'))
-  const run = createDshGeneration({ llm: {}, selection() { started = true } })
+  const run = createDshGeneration({ llm: { prepareCall() { started = true } } })
   await assert.rejects(run({ gameId: 'g', request: base, signal: controller.signal }), /取消/)
   assert.equal(started, false)
 })
@@ -80,8 +80,8 @@ test('installed DSH preserves the complete request and budgets against its dispa
     }
   }
   llm.registerAdapter(['isolated-fixture'], new Model())
-  const run = createDshGeneration({ llm, selection: async () => ({ provider: 'isolated-fixture', model: 'story' }) })
-  const request = { ...base, temperature: 0.75, tools: [tool], messages: [
+  const run = createDshGeneration({ llm })
+  const request = { ...base, model: { provider: 'isolated-fixture', model: 'story' }, temperature: 0.75, tools: [tool], messages: [
     { role: 'system', content: '开头规则' }, { role: 'user', content: '第一轮输入' },
     { role: 'assistant', content: '第一轮正文' }, { role: 'system', content: '深度插入规则' },
     { role: 'user', content: '本轮原输入' }
@@ -116,30 +116,34 @@ test('installed DSH preserves the complete request and budgets against its dispa
 })
 
 
-test('foreground uses the public current selection; background uses its existing Tavern setting', async () => {
-  let backgroundReads = 0;
-  let selected = { provider: 'configured', model: 'next-model', reasoningEffort: 'high' };
-  const ctx = { agents: { get: id => {
-    assert.equal(id, 'game');
-    return { model: { current: () => selected }, session: { requestHeader() { assert.fail('must not read stale request headers'); } } };
-  } }, tavern: { backgroundModel: async ({ gameId }) => {
-    assert.equal(gameId, 'game'); backgroundReads++;
-    return { provider: 'background', model: 'settlement', reasoningEffort: 'low' };
-  } } };
-  assert.deepEqual(await selectGenerationModel(ctx, 'game', 'foreground'), selected);
-  assert.equal(backgroundReads, 0);
-  assert.deepEqual(await selectGenerationModel(ctx, 'game', 'background'), { provider: 'background', model: 'settlement', reasoningEffort: 'low' });
-  assert.equal(backgroundReads, 1);
-  selected = { provider: 'configured', model: 'changed' };
-  assert.deepEqual(await selectGenerationModel(ctx, 'game', 'foreground'), selected);
-  selected = undefined;
-  await assert.rejects(selectGenerationModel(ctx, 'game', 'foreground'), /没有可用模型/);
+test('model selection requires a plugin route and snapshots only its explicit controls', async () => {
+  const selected = { provider: 'configured', model: 'next-model', reasoningEffort: 'high' };
+  const snapshot = selectGenerationModel(selected);
+  assert.deepEqual(snapshot, selected);
+  selected.model = 'changed';
+  assert.equal(snapshot.model, 'next-model');
+  const h = harness([]);
+  for (const model of [undefined, null, 'foreground', 'background', { provider: 'x' }]) {
+    await assert.rejects(h.run({ ...base, model }), /选择.*模型|模型选择/);
+  }
+  assert.equal(h.sent.length, 0);
+});
+
+test('an unavailable independent model fails without a retry or another model', async () => {
+  const calls = [];
+  const run = createDshGeneration({ llm: { async prepareCall(config) {
+    calls.push(config); throw new Error('所选模型不可用');
+  } } });
+  await assert.rejects(run({ request: base }), /所选模型不可用/);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].provider, base.model.provider);
+  assert.equal(calls[0].model, base.model.model);
 });
 
 test('cancellation propagates into the DSH stream and rejects partial output without retry', async () => {
   const controller = new AbortController();
   let attempts = 0;
-  const run = createDshGeneration({ selection: async () => ({ provider: 'fixture', model: 'story' }), llm: {
+  const run = createDshGeneration({ llm: {
     async prepareCall(config, signal, configure) {
       assert.equal(signal, controller.signal);
       const { provider, model, ...controls } = config;

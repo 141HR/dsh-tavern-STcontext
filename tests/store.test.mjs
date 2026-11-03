@@ -35,7 +35,7 @@ test('preset export preserves script data without executing it; edits select/del
   const source = JSON.stringify({ ...document, extensions: { tavern_helper: { scripts: [{ enabled: false, content: 'process.exit(1)' }] } } });
   const imported = await upload(store, source);
   assert.equal((await store.export({ id: imported.activeId })).text, source);
-  await store.settings({ maxTokens: '1234', model: 'background', adapter: 'st' });
+  await store.settings({ maxTokens: '1234', model: { provider: 'configured', model: 'story' }, adapter: 'st' });
   assert.equal((await store.active()).settings.maxTokens, 1234);
   await store.remove({ id: imported.activeId });
   await assert.rejects(store.active(), /先.*导入/);
@@ -44,4 +44,35 @@ test('compressed store rejects malformed and oversized decompressed payloads', (
   assert.equal(decodePreset(encodePreset('你好')), '你好');
   assert.throws(() => decodePreset('invalid'));
   assert.throws(() => decodePreset(encodePreset('a'.repeat(2 * 1024 * 1024 + 1))));
+});
+
+test('independent model persists across reloads, validates atomically and can be cleared', async () => {
+  const tavern = fakeTavern(), store = createPresetStore(tavern);
+  const model = { provider: ' own-provider ', model: 'story', reasoningEffort: 'high' };
+  await store.settings({ model, maxTokens: 2048 });
+  const expected = { ...model, provider: 'own-provider' };
+  assert.deepEqual((await createPresetStore(tavern).list()).settings.model, expected);
+  model.model = 'changed-after-save';
+  for (const invalid of ['foreground', 'background', {}, [], { provider: 'p', model: '' },
+    { provider: 'p', model: 'm', reasoningEffort: 123 }, { provider: 'p', model: 'm', apiKey: 'never-store' }]) {
+    await assert.rejects(store.settings({ model: invalid, maxTokens: 1 }), /模型选择无效/);
+    assert.deepEqual((await store.list()).settings, { model: expected, maxTokens: 2048 });
+  }
+  await store.settings({ model: null });
+  assert.deepEqual((await store.list()).settings, { maxTokens: 2048 });
+});
+
+test('legacy following settings keep presets and sampling but require an independent choice', async () => {
+  for (const slot of ['foreground', 'background']) {
+    const tavern = fakeTavern(), store = createPresetStore(tavern);
+    const original = await upload(store, JSON.stringify(document));
+    const data = await tavern.readPluginData();
+    data.settings = { model: slot, maxTokens: 1234 };
+    await tavern.savePluginData({ data });
+    const migrated = createPresetStore(tavern);
+    assert.equal((await migrated.list()).activeId, original.activeId);
+    assert.deepEqual((await migrated.active()).settings, { maxTokens: 1234 });
+    await migrated.settings({ temperature: .5 });
+    assert.deepEqual((await tavern.readPluginData()).settings, { maxTokens: 1234, temperature: .5 });
+  }
 });

@@ -27,8 +27,8 @@ for (const withMeter of [false, true]) {
       save: async (owner, value) => { data.set(owner, structuredClone(value)); },
     } });
     ctx.provide('tavern', api.service);
-    ctx.provide('llm', { prepareCall() { assert.fail('loading/import must not request a model'); } });
-    ctx.provide('agents', {});
+    ctx.provide('llm', { prepareCall() { assert.fail('loading/import must not request a model'); },
+      listProviders: () => [{ id: 'configured' }], listModels: async () => [{ id: 'story' }] });
     if (withMeter) ctx.provide('tokenMeter', { estimateMessage: () => 1 });
 
     const entry = join(dir, '.tavern-entry.mjs');
@@ -43,6 +43,9 @@ for (const withMeter of [false, true]) {
     const { id } = await call('upload/begin', { name: 'fixture.json', size: source.length });
     await call('upload/chunk', { id, index: 0, text: source });
     await call('upload/finish', { id });
+    const model = { provider: 'configured', model: 'story' };
+    await call('settings', { model });
+    assert.equal((await call('models')).groups[0].models[0].id, 'story');
     const config = await call('config');
     assert.equal(config.presets.length, 1);
     assert.equal(config.hostReady, true);
@@ -58,6 +61,7 @@ for (const withMeter of [false, true]) {
     fiber = ctx.plugin(guarded);
     await fiber.await();
     assert.equal((await call('config')).activeId, config.activeId, 'reloading keeps imported presets');
+    assert.deepEqual((await call('config')).settings.model, model, 'reloading keeps the independent model');
     assert.equal((await api.bodyGenerators.list()).length, 1, 'reloading does not duplicate registration');
   });
 }

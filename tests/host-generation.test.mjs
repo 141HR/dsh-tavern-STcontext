@@ -39,10 +39,12 @@ test('host prepares current turn -> STcontext -> tool receipt -> one processed b
   apply({ get: () => undefined, tavern: { handle: (name, callback) => handlers.set(name, callback),
     readPluginData: async () => copy(pluginData), savePluginData: async ({ data }) => { pluginData = copy(data); },
     bodyGenerator: entry => providers.register('dsh-tavern-STcontext', entry) },
-    agents: { get: () => ({ model: { current: () => ({ provider: 'test', model: 'test' }) } }) },
+    get agents() { assert.fail('plugin generation must be independent of foreground selection'); },
     llm: { async prepareCall(config, signal, configure) {
       return { config: configure(config, { context: { contextWindow: 128000 } }), async *stream(request) {
         requests++;
+        assert.equal(request.provider, 'independent');
+        assert.equal(request.model, 'plugin-story');
         const wire = JSON.stringify(request.messages);
         for (const value of ['完整历史正文', '已解析人物设定', '继续', '起点', 'normal-only']) assert.ok(wire.includes(value), value);
         assert.doesNotMatch(wire, /regenerate-only|summary/);
@@ -59,6 +61,7 @@ test('host prepares current turn -> STcontext -> tool receipt -> one processed b
     extensions: { regex_scripts: [{ id: 'once', placement: [2], findRegex: '/X/g', replaceString: 'XX', markdownOnly: true, promptOnly: true }] } });
   const { id } = await call('upload/begin', { name: 'test.json', size: preset.length });
   await call('upload/chunk', { id, index: 0, text: preset }); await call('upload/finish', { id });
+  await call('settings', { model: { provider: 'independent', model: 'plugin-story' } });
   await turns.prepare({ sessionId: 'session', turn: 2, userText: '继续', requestId: 'r' });
   const session = { id: 'session', events: [{ type: 'turn/start', data: { turn: 2 } }] };
   let concludes = 0;

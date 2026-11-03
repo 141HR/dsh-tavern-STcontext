@@ -79,6 +79,7 @@ test('real Kunlun import -> host materials/plugin DSH request -> replacement/nat
       const controls = transform(config, { context: { contextWindow: 1000000 }, defaultMaxTokens: 4096 });
       return { config: controls, stream: async function* (options) {
         modelCalls++;
+        assert.equal(options.provider, 'independent'); assert.equal(options.model, 'plugin-story');
         assert.equal(options.system, ''); assert.equal(options.tools.length, 1);
         const wire = JSON.stringify(options);
         for (const text of ['完整可见开场白', '前轮可见玩家输入', '前轮完整可见正文', '本轮原有输入', '已展开人物设定', '本轮选取世界书', '本轮写作要求', '本轮起点 HP 10']) assert.ok(wire.includes(text), text);
@@ -96,7 +97,7 @@ test('real Kunlun import -> host materials/plugin DSH request -> replacement/nat
     publish: async () => {} });
   const owner = 'dsh-tavern-STcontext', handlers = new Map();
   let saved;
-  apply({ get: () => undefined, llm, agents: { get: () => ({ model: { current: () => ({ provider: 'fixture', model: 'fixture' }) } }) }, tavern: {
+  apply({ get: () => undefined, llm, get agents() { assert.fail('must not read foreground selection'); }, tavern: {
     readPluginData: async () => clone(saved), savePluginData: async ({ data }) => { saved = clone(data); },
     handle: (key, handler) => handlers.set(key, handler), onGameRemoved() {},
     bodyRegenerator: entry => jobs.register(owner, { ...entry, generate: async input => { candidate = await entry.generate(input); return candidate; } }),
@@ -108,6 +109,7 @@ test('real Kunlun import -> host materials/plugin DSH request -> replacement/nat
   const upload = await call('upload/begin', { name: 'user-imported.json', size: presetSource.length });
   for (let offset = 0, index = 0; offset < presetSource.length; offset += 50000, index++) await call('upload/chunk', { id: upload.id, index, text: presetSource.slice(offset, offset + 50000) });
   await call('upload/finish', { id: upload.id });
+  await call('settings', { model: { provider: 'independent', model: 'plugin-story' } });
   assert.equal((await call('export', { id: saved.activeId })).text, presetSource);
   const receipt = await call('start', { gameId: 'session' });
   let status;

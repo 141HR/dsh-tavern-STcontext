@@ -21,6 +21,7 @@ window.__ModuleLoader__.load({
           const [config, setConfig] = React.useState(null), [status, setStatus] = React.useState(null);
           const [error, setError] = React.useState(''), [notice, setNotice] = React.useState(''), [working, setWorking] = React.useState(false);
           const [settings, setSettings] = React.useState({}), [report, setReport] = React.useState(null);
+          const [catalog, setCatalog] = React.useState([]), [modelsLoading, setModelsLoading] = React.useState(false), [modelError, setModelError] = React.useState('');
           const [request, setRequest] = React.useState(''), [requestShown, setRequestShown] = React.useState(false);
           const file = React.useRef(null), alive = React.useRef(true);
           const busy = working || !ended(status);
@@ -30,9 +31,18 @@ window.__ModuleLoader__.load({
             const value = await call('config');
             if (alive.current) { setConfig(value); setSettings(value.settings || {}); }
           }
+          async function refreshModels() {
+            setModelsLoading(true); setModelError('');
+            try {
+              const value = await call('models');
+              if (alive.current) setCatalog(value.groups || []);
+            } catch (err) { if (alive.current) setModelError(err.message || String(err)); }
+            finally { if (alive.current) setModelsLoading(false); }
+          }
           React.useEffect(() => {
             alive.current = true;
             refresh().catch(err => { if (alive.current) setError(err.message || String(err)); });
+            refreshModels();
             return () => { alive.current = false; };
           }, []);
           React.useEffect(() => {
@@ -75,6 +85,14 @@ window.__ModuleLoader__.load({
           }
           const selected = config?.presets.find(item => item.id === config.activeId);
           const activeReport = report || selected?.report;
+          const modelKey = settings.model?.provider && settings.model?.model
+            ? JSON.stringify({ provider: settings.model.provider, model: settings.model.model }) : '';
+          const modelOptions = catalog.flatMap(group => group.models.map(model => ({
+            key: JSON.stringify({ provider: group.provider, model: model.id }),
+            label: group.providerName + ' · ' + model.name, efforts: model.efforts || [],
+          })));
+          const selectedModel = modelOptions.find(model => model.key === modelKey);
+          const efforts = selectedModel?.efforts || [];
           const controls = [
             ['maxTokens', '输出 token 上限', '留空使用预设'],
             ['contextLimit', '上下文预算（可选）', '留空由宿主模型检查'],
@@ -103,12 +121,28 @@ window.__ModuleLoader__.load({
               h('label', { style: { display: 'block', marginTop: 10 } }, '请求模式',
                 h('select', { style: field, value: settings.adapter || 'auto', disabled: busy, onChange: event => setSettings({ ...settings, adapter: event.target.value }) },
                   h('option', { value: 'auto' }, '自动识别已适配脚本'), h('option', { value: 'st' }, '标准 ST（明确忽略脚本行为）'))),
-              h('label', { style: { display: 'block', marginTop: 10 } }, '模型',
-                h('select', { style: field, value: settings.model || 'foreground', disabled: busy, onChange: event => setSettings({ ...settings, model: event.target.value }) },
-                  h('option', { value: 'foreground' }, '当前前台模型'), h('option', { value: 'background' }, '本局后台模型'))),
+              h('label', { style: { display: 'block', marginTop: 10 } }, '插件正文模型',
+                h('select', { 'aria-label': '插件正文模型', style: field, value: modelKey, disabled: busy || !config || modelsLoading,
+                  onChange: event => setSettings({ ...settings, model: event.target.value ? JSON.parse(event.target.value) : null }) },
+                  h('option', { value: '' }, '请选择模型'),
+                  modelKey && !selectedModel && h('option', { value: modelKey }, settings.model.provider + ' · ' + settings.model.model + '（未在列表中找到）'),
+                  ...modelOptions.map(model => h('option', { key: model.key, value: model.key }, model.label)))),
+              h('p', { style: { fontSize: 12, opacity: .75 } }, '独立用于 STcontext 正文生成和重生成，修改前台或后台模型不会改变此设置。模型服务和凭据沿用 DSH 中已配置的服务商。'),
+              !modelKey && h('p', { role: 'status' }, '请先选择插件正文模型。旧版前台/后台跟随设置需重新选择。'),
+              !modelsLoading && !modelOptions.length && h('p', { role: 'status' }, '暂无可选文本模型，请先在 DSH 配置模型服务商，再刷新列表。'),
+              modelError && h('p', { role: 'alert' }, modelError),
+              ...catalog.filter(group => group.error).map(group => h('p', { key: group.provider, role: 'alert' }, group.providerName + '：' + group.error)),
+              h('button', { style: button, disabled: busy || modelsLoading, onClick: refreshModels }, modelsLoading ? '正在读取模型…' : '刷新模型列表'),
+              (efforts.length > 0 || settings.model?.reasoningEffort) && h('label', { style: { display: 'block', marginTop: 10 } }, '推理强度',
+                h('select', { 'aria-label': '推理强度', style: field, value: settings.model.reasoningEffort || '', disabled: busy,
+                  onChange: event => { const model = { ...settings.model }; if (event.target.value) model.reasoningEffort = event.target.value; else delete model.reasoningEffort; setSettings({ ...settings, model }); } },
+                  h('option', { value: '' }, '模型默认'),
+                  settings.model.reasoningEffort && !efforts.some(item => item.id === settings.model.reasoningEffort)
+                    && h('option', { value: settings.model.reasoningEffort }, settings.model.reasoningEffort + '（未在列表中找到）'),
+                  ...efforts.map(item => h('option', { key: item.id, value: item.id }, item.name)))),
               ...controls.map(([key, label, placeholder]) => h('label', { key, style: { display: 'block', marginTop: 10 } }, label,
                 h('input', { type: 'number', step: key === 'temperature' ? '.1' : '1', min: key === 'temperature' ? 0 : 1, style: field, placeholder, value: settings[key] ?? '', disabled: busy, onChange: event => setSettings({ ...settings, [key]: event.target.value }) }))),
-              h('button', { style: { ...button, marginTop: 12 }, disabled: busy, onClick: () => act(async () => { await call('settings', settings); await refresh(); setNotice('设置已保存'); }) }, '保存设置')),
+              h('button', { style: { ...button, marginTop: 12 }, disabled: busy || !config, onClick: () => act(async () => { await call('settings', settings); await refresh(); setNotice('设置已保存'); }) }, '保存设置')),
             h('section', { style: box },
               h('strong', null, '正文重生成'),
               config?.generationReady && h('p', null, '自动生成新正文：在「设置 → DSH Tavern → 剧情」选择 STcontext，再将正文生成方式设为「通过 Tool Call 调用插件」。当前面板仍可手动重生成最新正文。'),
@@ -117,7 +151,7 @@ window.__ModuleLoader__.load({
               status?.result?.settlementStatus === 'failed' && h('p', { role: 'status' }, '新正文已保留，后台结算失败。请在宿主中重试结算。'),
               status?.error && h('p', { role: 'alert', style: { color: '#dc6c65', whiteSpace: 'pre-wrap' } }, typeof status.error === 'string' ? status.error : status.error.message),
               h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
-                h('button', { style: button, disabled: busy || !selected || !config?.hostReady, onClick: () => act(async () => { await call('settings', settings); setReport(null); const value = await call('start', { gameId }); setStatus(value); }) }, '重新生成最新正文'),
+                h('button', { style: button, disabled: busy || !selected || !modelKey || !config?.hostReady, onClick: () => act(async () => { await call('settings', settings); setReport(null); const value = await call('start', { gameId }); setStatus(value); }) }, '重新生成最新正文'),
                 h('button', { style: button, disabled: !canCancel || working, onClick: () => act(async () => { const value = await call('cancel', { gameId, id: status.id }); setStatus(value); }) }, '取消生成'),
                 h('button', { style: button, disabled: working, onClick: () => act(readRequest) }, '查看本次请求')),
               h('p', { style: { fontSize: 12, opacity: .75 } }, '只发送用户可见的历史。生成结果经过预设输出正则一次处理后，由宿主替换正文并从起点重新结算。')),
