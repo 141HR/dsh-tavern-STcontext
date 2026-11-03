@@ -9,11 +9,11 @@ const simplePreset = { prompts: [{ identifier: 'chatHistory', marker: true }],
   prompt_order: [{ character_id: 100001, order: [{ identifier: 'chatHistory', enabled: true }] }] };
 
 // Drive the real client and host entry with a tiny hook scheduler; no DOM or framework dependency.
-function harness({ hostReady = true, initialModel, catalogFailure = false } = {}) {
+function harness({ hostReady = true, initialModel, initialSettings = {}, catalogFailure = false } = {}) {
   const hooks = [], effects = [], pending = new Set(), timers = new Map(), calls = [], downloads = [];
   let cursor = 0, dirty = true, tree, component, properties, panel, action, overlay, registered, saved, status = null, serial = 0;
   const handlers = new Map();
-  if (initialModel !== undefined) saved = { schemaVersion: 1, presets: [], activeId: null, settings: { model: initialModel } };
+  saved = { schemaVersion: 1, presets: [], activeId: null, settings: { ...initialSettings, ...(initialModel === undefined ? {} : { model: initialModel }) } };
   let modelFailure = catalogFailure;
   const models = [{ id: 'story', name: 'Story', reasoning: { efforts: [{ id: 'high', name: 'High' }] } }, { id: 'other', name: 'Other' }];
   const tavern = { readPluginData: async () => structuredClone(saved), savePluginData: async ({ data }) => { saved = structuredClone(data); },
@@ -91,7 +91,7 @@ function harness({ hostReady = true, initialModel, catalogFailure = false } = {}
     async input(file) { const target = { files: [file], value: 'selected.json' }; nodes().find(node => node.type === 'input' && node.props.type === 'file').props.onChange({ target }); assert.equal(target.value, ''); await flush(); },
     async click(label) { const element = nodes().find(node => node.type === 'button' && contents(node) === label); assert.ok(element, label); assert.ok(!element.props.disabled, label + ' must be enabled'); await element.props.onClick(); await flush(); },
     async poll() { const item = [...timers].find(([, timer]) => timer.delay === 1200); assert.ok(item); timers.delete(item[0]); await item[1].fn(); await flush(); },
-    async changeNumber(index, value) { nodes().filter(node => node.type === 'input' && node.props.type === 'number')[index].props.onChange({ target: { value } }); await flush(); },
+    numberInputs: () => nodes().filter(node => node.type === 'input' && node.props.type === 'number').length,
     async choose(label, value) { const node = nodes().find(node => node.type === 'select' && node.props['aria-label'] === label); assert.ok(node, label); assert.ok(!node.props.disabled); node.props.onChange({ target: { value } }); await flush(); },
     selectValue: label => nodes().find(node => node.type === 'select' && node.props['aria-label'] === label)?.props.value,
     text: () => contents(tree),
@@ -116,8 +116,9 @@ test('client imports in chunks, exports exact JSON, saves controls, starts and c
     assert.equal(h.disabled('重新生成最新正文'), false);
     await h.click('导出原文件');
     assert.equal(await h.downloads[0].blob.text(), source);
-    await h.changeNumber(0, '2048'); await h.click('保存设置');
-    assert.equal(h.calls.filter(call => call.name === 'settings').at(-1).input.maxTokens, '2048');
+    assert.equal(h.numberInputs(), 0);
+    assert.doesNotMatch(h.text(), /输出\s*token\s*上限|上下文预算|温度/);
+    await h.click('保存设置');
     assert.deepEqual(h.saved.settings.model, { provider: 'own', model: 'story', reasoningEffort: 'high' });
     await h.click('重新生成最新正文');
     assert.equal(h.calls.filter(call => call.name === 'start').at(-1).input.gameId, 'game');
@@ -169,7 +170,7 @@ test('legacy selection requires a new choice; catalog failure can be refreshed w
     assert.match(h.text(), /模型列表读取失败/);
     assert.equal(h.selectValue('插件正文模型'), '');
     assert.equal(h.disabled('重新生成最新正文'), true);
-    await h.changeNumber(0, '1024');
+    await h.choose('请求模式', 'st');
     h.modelFailure = false;
     await h.click('刷新模型列表');
     assert.doesNotMatch(h.text(), /模型列表读取失败/);
@@ -178,7 +179,7 @@ test('legacy selection requires a new choice; catalog failure can be refreshed w
     await h.choose('插件正文模型', JSON.stringify({ provider: 'own', model: 'other' }));
     await h.click('保存设置');
     assert.deepEqual(h.saved.settings.model, { provider: 'own', model: 'other' });
-    assert.equal(h.saved.settings.maxTokens, 1024);
+    assert.equal(h.saved.settings.adapter, 'st');
   } finally { h.destroy(); }
 });
 
@@ -191,5 +192,26 @@ test('saved unavailable models stay visible instead of silently selecting anothe
     assert.match(h.text(), /saved-story（未在列表中找到）/);
     await h.click('刷新模型列表'); await h.click('保存设置');
     assert.deepEqual(h.saved.settings.model, model);
+  } finally { h.destroy(); }
+});
+
+test('preset import keeps unsaved model edits and saving preserves hidden sampling settings', async () => {
+  const sampling = { maxTokens: 2048, contextLimit: 32768, temperature: .7 };
+  const h = harness({ initialSettings: sampling });
+  try {
+    await h.mount();
+    await h.choose('插件正文模型', JSON.stringify({ provider: 'own', model: 'story' }));
+    await h.choose('推理强度', 'high');
+    await h.choose('请求模式', 'st');
+    await h.input(file(JSON.stringify(simplePreset)));
+    assert.match(h.text(), /有未保存的更改/);
+    assert.equal(h.selectValue('推理强度'), 'high');
+    assert.equal(h.selectValue('请求模式'), 'st');
+    assert.equal(h.numberInputs(), 0);
+    await h.click('重新生成最新正文');
+    assert.deepEqual(h.saved.settings, { ...sampling, adapter: 'st', model: { provider: 'own', model: 'story', reasoningEffort: 'high' } });
+    const patch = h.calls.filter(call => call.name === 'settings').at(-1).input;
+    for (const key of Object.keys(sampling)) assert.equal(Object.hasOwn(patch, key), false);
+    assert.doesNotMatch(h.text(), /有未保存的更改/);
   } finally { h.destroy(); }
 });

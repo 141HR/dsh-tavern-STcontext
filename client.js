@@ -9,9 +9,73 @@ window.__ModuleLoader__.load({
         const ui = ctx.tavernUi, call = (name, args = {}) => ui.callHost('dsh-tavern-stcontext/' + name, args);
         const labels = { queued: '排队中', preparing: '准备起点快照', snapshot: '读取完整可见材料', generating: '独立生成中', validating: '校验正文', committing: '替换正文', committed: '正文已提交', syncing: '同步主会话', settling: '重新结算', completed: '已完成', succeeded: '已完成', failed: '失败', cancelled: '已取消', canceled: '已取消', aborted: '已取消', running: '进行中' };
         const ended = value => !value || ['completed', 'succeeded', 'failed', 'cancelled', 'canceled', 'aborted'].includes(value.status);
-        const box = { border: '1px solid var(--border-color, #6665)', borderRadius: 10, padding: 14, marginBottom: 12 };
-        const button = { padding: '7px 11px', border: '1px solid var(--border-color, #6665)', borderRadius: 7, background: 'var(--background-secondary, transparent)', color: 'inherit', cursor: 'pointer' };
-        const field = { boxSizing: 'border-box', width: '100%', padding: 8, color: 'inherit', background: 'var(--background-secondary, transparent)', border: '1px solid #8885', borderRadius: 6 };
+        const editableSettings = value => ({ adapter: value?.adapter || 'auto', model: value?.model || null });
+        const css = `
+.stc-panel{--stc-surface:var(--dsw-specific-input-major,#fff);--stc-border:var(--dsw-alias-border-l2,#e3e4eb);--stc-muted:var(--dsw-alias-label-secondary,#717583);--stc-accent:var(--dsh-tavern-accent,#5956c9);--stc-soft:var(--dsh-tavern-accent-soft,#eeedf9);--stc-highlight:var(--stc-accent);box-sizing:border-box;width:100%;max-width:1020px;min-width:0;margin:0 auto;padding:24px;color:var(--dsw-alias-label-primary,inherit);font:inherit;font-size:14px;line-height:1.6;container:stcontext / inline-size}
+body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major,#24252d);--stc-border:var(--dsw-alias-border-l2,#3d3e48);--stc-muted:var(--dsw-alias-label-secondary,#afb2c0);--stc-soft:var(--dsh-tavern-accent-soft,#303047);--stc-highlight:#bbb7ff}
+.stc-panel *{box-sizing:border-box}
+.stc-panel h2,.stc-panel h3,.stc-panel p{margin:0}
+.stc-panel h2{font-size:23px;font-weight:650;letter-spacing:-.6px;line-height:1.3}
+.stc-panel h3{font-size:15px;font-weight:650}
+.stc-panel button,.stc-panel select{font:inherit}
+.stc-panel .stc-muted{color:var(--stc-muted);font-size:12px}
+.stc-panel .stc-heading{display:flex;align-items:center;gap:12px;min-width:0}
+.stc-panel .stc-brand{display:grid;place-items:center;flex:none;width:42px;height:42px;border-radius:13px;background:var(--stc-soft);color:var(--stc-highlight);font-size:16px;font-weight:750;letter-spacing:-1px}
+.stc-panel .stc-header{display:flex;justify-content:space-between;align-items:center;gap:14px;margin-bottom:22px}
+.stc-panel .stc-subtitle{color:var(--stc-muted);font-size:12px;margin-top:4px}
+.stc-panel .stc-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.stc-panel .stc-between{justify-content:space-between}
+.stc-panel .stc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:16px;margin-bottom:16px}
+.stc-panel .stc-card{min-width:0;border:1px solid var(--stc-border);border-radius:14px;background:var(--stc-surface);padding:20px}
+.stc-panel .stc-config-card{display:flex;flex-direction:column;gap:16px}
+.stc-panel .stc-card-title{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.stc-panel .stc-field{display:flex;flex-direction:column;gap:7px;min-width:0;font-size:12px;font-weight:600}
+.stc-panel .stc-select{display:block;width:100%;min-width:0;min-height:40px;padding:8px 10px;border:1px solid var(--stc-border);border-radius:8px;color:inherit;background:var(--stc-surface);font-weight:400;text-overflow:ellipsis}
+.stc-panel .stc-button{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:36px;max-width:100%;padding:7px 12px;border:1px solid var(--stc-border);border-radius:8px;color:inherit;background:transparent;line-height:1.4;cursor:pointer;transition:background .15s,border-color .15s}
+.stc-panel .stc-button:hover:not(:disabled){border-color:var(--stc-accent);background:var(--stc-soft)}
+.stc-panel .stc-button:disabled,.stc-panel .stc-select:disabled{opacity:.45;cursor:not-allowed}
+.stc-panel .stc-button:focus-visible,.stc-panel .stc-select:focus-visible,.stc-panel summary:focus-visible{outline:2px solid var(--stc-accent);outline-offset:3px}
+.stc-panel .stc-primary{background:var(--stc-accent);border-color:var(--stc-accent);color:#fff;font-weight:600;min-height:42px;padding:10px 18px}
+.stc-panel .stc-primary:hover:not(:disabled){background:var(--stc-accent);filter:brightness(1.1)}
+.stc-panel .stc-quiet{border-color:transparent;font-size:12px;color:var(--stc-muted);padding:5px 8px;min-height:30px}
+.stc-panel .stc-danger{color:var(--dsh-tavern-accent-error,#c54f4f)}
+.stc-panel .stc-badge{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:6px;background:var(--stc-soft);color:var(--stc-highlight);font-size:11px;white-space:nowrap}
+.stc-panel .stc-badge-neutral{background:rgba(128,128,144,.09);color:var(--stc-muted)}
+.stc-panel .stc-badge-error{background:rgba(197,79,79,.1);color:var(--dsh-tavern-accent-error,#c54f4f)}
+.stc-panel .stc-dot{width:6px;height:6px;flex:none;border-radius:50%;background:currentColor}
+.stc-panel .stc-empty{border:1px dashed var(--stc-border);border-radius:10px;padding:22px 14px;text-align:center}
+.stc-panel .stc-empty p+p{margin-top:5px}
+.stc-panel .stc-card-footer{margin-top:auto;padding-top:14px;border-top:1px solid var(--stc-border)}
+.stc-panel .stc-message{border-radius:9px;padding:10px 13px;font-size:12px;overflow-wrap:anywhere;white-space:pre-wrap}
+.stc-panel .stc-notice{background:var(--stc-soft)}
+.stc-panel .stc-error{background:rgba(197,79,79,.09);border-left:3px solid var(--dsh-tavern-accent-error,#c54f4f)}
+.stc-panel .stc-feedback{display:grid;gap:8px;margin-bottom:16px}
+.stc-panel .stc-feedback:empty{display:none}
+.stc-panel .stc-generation{display:grid;gap:16px;margin-bottom:16px;border-top:3px solid var(--stc-accent)}
+.stc-panel .stc-actions{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.stc-panel .stc-details{border-top:1px solid var(--stc-border);padding-top:12px}
+.stc-panel summary{cursor:pointer;font-size:12px;color:var(--stc-muted);border-radius:4px;overflow-wrap:anywhere}
+.stc-panel details[open]>summary{margin-bottom:12px}
+.stc-panel .stc-details-body{display:grid;gap:12px;min-width:0}
+.stc-panel .stc-report{margin-bottom:16px;padding:14px 20px}
+.stc-panel .stc-report>summary{color:inherit;font-size:13px}
+.stc-panel .stc-report>summary .stc-badge{margin-left:10px}
+.stc-panel .stc-meta{font-family:ui-monospace,monospace;font-size:11px;color:var(--stc-muted);overflow-wrap:anywhere}
+.stc-panel .stc-report ul{margin:0;padding-left:20px;font-size:12px;color:var(--stc-muted)}
+.stc-panel .stc-request{display:grid;gap:14px}
+.stc-panel .stc-request pre{margin:0;padding:14px;border:1px solid var(--stc-border);border-radius:9px;background:rgba(128,128,144,.05);white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;max-height:440px;overflow:auto}
+.stc-panel .stc-request-name{font-size:12px;color:var(--stc-muted)}
+@container stcontext (max-width:480px){.stc-panel .stc-header{align-items:flex-start}
+.stc-panel .stc-card{padding:16px}
+.stc-panel .stc-actions{align-items:stretch}
+.stc-panel .stc-actions>.stc-row{width:100%}
+.stc-panel .stc-actions .stc-primary{flex:1}
+.stc-panel .stc-header-status{display:none}
+.stc-panel .stc-brand{width:36px;height:36px}
+.stc-panel h2{font-size:20px}}
+@media(max-width:480px){.stc-panel{padding:16px}}
+@media(prefers-reduced-motion:reduce){.stc-panel .stc-button{transition:none}}
+`;
         function download(name, text) {
           const url = URL.createObjectURL(new Blob([text], { type: 'application/json;charset=utf-8' }));
           const a = document.createElement('a'); a.href = url; a.download = name; a.click();
@@ -27,9 +91,13 @@ window.__ModuleLoader__.load({
           const busy = working || !ended(status);
           const phase = status && ['failed', 'cancelled', 'canceled', 'aborted'].includes(status.status) ? status.status : status?.phase || status?.status;
           const canCancel = !ended(status) && status?.cancellable !== false && !status?.committed && !['committed', 'settling'].includes(status?.phase);
-          async function refresh() {
+          async function refresh(resetSettings = true) {
             const value = await call('config');
-            if (alive.current) { setConfig(value); setSettings(value.settings || {}); }
+            if (alive.current) { setConfig(value); if (resetSettings) setSettings(editableSettings(value.settings)); }
+          }
+          async function saveSettings() {
+            const value = await call('settings', editableSettings(settings));
+            if (alive.current) { setConfig(current => ({ ...current, ...value })); setSettings(editableSettings(value.settings)); }
           }
           async function refreshModels() {
             setModelsLoading(true); setModelError('');
@@ -69,7 +137,7 @@ window.__ModuleLoader__.load({
                 await call('upload/chunk', { id: upload.id, index, text: text.slice(offset, offset + 50000) });
               }
               await call('upload/finish', { id: upload.id });
-              await refresh(); setNotice('预设已导入。原 JSON 和脚本作为数据保存，脚本不会直接执行。');
+              await refresh(false); setReport(null); setNotice('预设已导入');
             });
           }
           async function readRequest() {
@@ -93,76 +161,92 @@ window.__ModuleLoader__.load({
           })));
           const selectedModel = modelOptions.find(model => model.key === modelKey);
           const efforts = selectedModel?.efforts || [];
-          const controls = [
-            ['maxTokens', '输出 token 上限', '留空使用预设'],
-            ['contextLimit', '上下文预算（可选）', '留空由宿主模型检查'],
-            ['temperature', '温度', '留空使用预设'],
-          ];
-          return h('div', { style: { padding: 16, maxWidth: 900, margin: '0 auto', color: 'inherit', overflowY: 'auto', maxHeight: close ? '94vh' : undefined } },
-            h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 } },
-              h('div', null, h('h2', { style: { margin: '0 0 6px' } }, 'STcontext'), h('p', { style: { margin: '0 0 14px', opacity: .75 } }, '导入预设 · 完整可见历史 · 正文生成与重生成')),
-              close && h('button', { style: button, onClick: close }, '关闭')),
-            error && h('p', { role: 'alert', style: { color: '#dc6c65', whiteSpace: 'pre-wrap' } }, error),
-            notice && h('p', { role: 'status' }, notice),
-            config?.hostReady === false && h('p', { role: 'alert' }, '宿主尚未提供重生成接口，请更新 DSH Tavern。预设仍可导入保存。'),
-            h('section', { style: box },
-              h('strong', null, '预设 JSON'),
+          const settingsDirty = config && JSON.stringify(editableSettings(settings)) !== JSON.stringify(editableSettings(config.settings));
+          const ready = !!(config?.hostReady && selected && modelKey);
+          const failed = status?.status === 'failed';
+          const message = (text, kind = 'notice', role = 'status') => h('p', { className: 'stc-message stc-' + kind, role }, text);
+          const badge = (text, tone = '') => h('span', { className: 'stc-badge' + (tone ? ' stc-badge-' + tone : '') }, text);
+          return h('div', { className: 'stc-panel', style: close ? { overflowY: 'auto', maxHeight: '94vh' } : undefined },
+            h('style', null, css),
+            h('header', { className: 'stc-header' },
+              h('div', { className: 'stc-heading' }, h('span', { className: 'stc-brand', 'aria-hidden': true }, 'ST'),
+                h('div', null, h('h2', null, 'STcontext'), h('p', { className: 'stc-subtitle' }, '完整可见历史 · 独立模型生成'))),
+              h('div', { className: 'stc-row' }, h('span', { className: 'stc-header-status' }, badge(!config ? '加载中' : ready ? '配置就绪' : '待配置', ready ? '' : 'neutral')),
+                close && h('button', { className: 'stc-button stc-quiet', onClick: close }, '关闭'))),
+            h('div', { className: 'stc-feedback' }, error && message(error, 'error', 'alert'), notice && message(notice),
+              config?.hostReady === false && message('宿主尚未提供重生成接口，请更新 DSH Tavern。预设仍可导入保存。', 'error', 'alert')),
+            h('div', { className: 'stc-grid' },
+            h('section', { className: 'stc-card stc-config-card', 'aria-label': '预设管理' },
+              h('div', { className: 'stc-card-title' }, h('div', null, h('h3', null, '预设'), h('p', { className: 'stc-muted' }, '管理叙事规则与上下文组织方式')),
+                h('button', { className: 'stc-button', disabled: busy, onClick: () => file.current?.click() }, '导入 JSON')),
               h('input', { ref: file, type: 'file', accept: '.json,application/json', style: { display: 'none' }, onChange: event => { const selectedFile = event.target.files?.[0]; event.target.value = ''; importFile(selectedFile); } }),
-              h('div', { style: { display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' } },
-                h('button', { style: button, disabled: busy, onClick: () => file.current?.click() }, '导入 JSON'),
-                h('button', { style: button, disabled: !selected || working, onClick: () => act(async () => { const value = await call('export', { id: selected.id }); download(value.name, value.text); }) }, '导出原文件'),
-                h('button', { style: button, disabled: !selected || busy, onClick: () => act(async () => { await call('remove', { id: selected.id }); await refresh(); setReport(null); }) }, '移除')),
-              h('select', { style: { ...field, marginTop: 10 }, value: config?.activeId || '', disabled: busy, onChange: event => { const id = event.target.value; act(async () => { await call('select', { id }); setReport(null); await refresh(); }); } },
-                h('option', { value: '', disabled: true }, '请选择导入的预设'),
-                ...(config?.presets || []).map(item => h('option', { key: item.id, value: item.id }, item.name))),
-              selected && h('p', { style: { fontSize: 12, opacity: .75, wordBreak: 'break-all' } }, 'SHA-256：' + selected.digest)),
-            h('section', { style: box },
-              h('strong', null, '生成设置'),
-              h('label', { style: { display: 'block', marginTop: 10 } }, '请求模式',
-                h('select', { style: field, value: settings.adapter || 'auto', disabled: busy, onChange: event => setSettings({ ...settings, adapter: event.target.value }) },
-                  h('option', { value: 'auto' }, '自动识别已适配脚本'), h('option', { value: 'st' }, '标准 ST（明确忽略脚本行为）'))),
-              h('label', { style: { display: 'block', marginTop: 10 } }, '插件正文模型',
-                h('select', { 'aria-label': '插件正文模型', style: field, value: modelKey, disabled: busy || !config || modelsLoading,
+              !selected && h('div', { className: 'stc-empty' }, h('p', null, config ? '还没有选定预设' : '正在读取预设…'), h('p', { className: 'stc-muted' }, '导入 SillyTavern 预设 JSON，即可开始配置。')),
+              h('label', { className: 'stc-field' }, '当前预设',
+                h('select', { className: 'stc-select', 'aria-label': '当前预设', value: config?.activeId || '', disabled: busy || !config?.presets.length,
+                  onChange: event => { const id = event.target.value; act(async () => { await call('select', { id }); setReport(null); await refresh(false); }); } },
+                  h('option', { value: '', disabled: true }, '请选择导入的预设'),
+                  ...(config?.presets || []).map(item => h('option', { key: item.id, value: item.id }, item.name)))),
+              selected && h('div', { className: 'stc-row' }, badge((selected.report?.enabledPrompts || 0) + ' 项提示词', 'neutral'), badge((selected.report?.regexCount || 0) + ' 条正则', 'neutral')),
+              h('details', { className: 'stc-details' }, h('summary', null, '预设适配'),
+                h('div', { className: 'stc-details-body' }, h('label', { className: 'stc-field' }, '请求模式',
+                  h('select', { className: 'stc-select', 'aria-label': '请求模式', value: settings.adapter || 'auto', disabled: busy || !config, onChange: event => setSettings({ ...settings, adapter: event.target.value }) },
+                    h('option', { value: 'auto' }, '自动识别已适配脚本'), h('option', { value: 'st' }, '标准 ST（忽略脚本行为）'))),
+                  h('p', { className: 'stc-muted' }, '默认自动识别。预设包含未适配脚本时，可选择标准 ST 模式。'))),
+              h('div', { className: 'stc-card-footer stc-row stc-between' }, h('span', { className: 'stc-muted' }, 'JSON · 最大 2 MB'),
+                h('div', { className: 'stc-row' },
+                  h('button', { className: 'stc-button stc-quiet', disabled: !selected || working, onClick: () => act(async () => { const value = await call('export', { id: selected.id }); download(value.name, value.text); }) }, '导出原文件'),
+                  h('button', { className: 'stc-button stc-quiet stc-danger', disabled: !selected || busy, onClick: () => act(async () => { await call('remove', { id: selected.id }); await refresh(false); setReport(null); }) }, '移除')))),
+            h('section', { className: 'stc-card stc-config-card', 'aria-label': '模型设置' },
+              h('div', { className: 'stc-card-title' }, h('div', null, h('h3', null, '正文模型'), h('p', { className: 'stc-muted' }, '用于正文生成与重生成')), badge('独立配置')),
+              h('label', { className: 'stc-field' }, '插件正文模型',
+                h('select', { 'aria-label': '插件正文模型', className: 'stc-select', value: modelKey, disabled: busy || !config || modelsLoading,
                   onChange: event => setSettings({ ...settings, model: event.target.value ? JSON.parse(event.target.value) : null }) },
                   h('option', { value: '' }, '请选择模型'),
                   modelKey && !selectedModel && h('option', { value: modelKey }, settings.model.provider + ' · ' + settings.model.model + '（未在列表中找到）'),
                   ...modelOptions.map(model => h('option', { key: model.key, value: model.key }, model.label)))),
-              h('p', { style: { fontSize: 12, opacity: .75 } }, '独立用于 STcontext 正文生成和重生成，修改前台或后台模型不会改变此设置。模型服务和凭据沿用 DSH 中已配置的服务商。'),
-              !modelKey && h('p', { role: 'status' }, '请先选择插件正文模型。旧版前台/后台跟随设置需重新选择。'),
-              !modelsLoading && !modelOptions.length && h('p', { role: 'status' }, '暂无可选文本模型，请先在 DSH 配置模型服务商，再刷新列表。'),
-              modelError && h('p', { role: 'alert' }, modelError),
-              ...catalog.filter(group => group.error).map(group => h('p', { key: group.provider, role: 'alert' }, group.providerName + '：' + group.error)),
-              h('button', { style: button, disabled: busy || modelsLoading, onClick: refreshModels }, modelsLoading ? '正在读取模型…' : '刷新模型列表'),
-              (efforts.length > 0 || settings.model?.reasoningEffort) && h('label', { style: { display: 'block', marginTop: 10 } }, '推理强度',
-                h('select', { 'aria-label': '推理强度', style: field, value: settings.model.reasoningEffort || '', disabled: busy,
+              (efforts.length > 0 || settings.model?.reasoningEffort) && h('label', { className: 'stc-field' }, '推理强度',
+                h('select', { 'aria-label': '推理强度', className: 'stc-select', value: settings.model.reasoningEffort || '', disabled: busy,
                   onChange: event => { const model = { ...settings.model }; if (event.target.value) model.reasoningEffort = event.target.value; else delete model.reasoningEffort; setSettings({ ...settings, model }); } },
                   h('option', { value: '' }, '模型默认'),
                   settings.model.reasoningEffort && !efforts.some(item => item.id === settings.model.reasoningEffort)
                     && h('option', { value: settings.model.reasoningEffort }, settings.model.reasoningEffort + '（未在列表中找到）'),
                   ...efforts.map(item => h('option', { key: item.id, value: item.id }, item.name)))),
-              ...controls.map(([key, label, placeholder]) => h('label', { key, style: { display: 'block', marginTop: 10 } }, label,
-                h('input', { type: 'number', step: key === 'temperature' ? '.1' : '1', min: key === 'temperature' ? 0 : 1, style: field, placeholder, value: settings[key] ?? '', disabled: busy, onChange: event => setSettings({ ...settings, [key]: event.target.value }) }))),
-              h('button', { style: { ...button, marginTop: 12 }, disabled: busy || !config, onClick: () => act(async () => { await call('settings', settings); await refresh(); setNotice('设置已保存'); }) }, '保存设置')),
-            h('section', { style: box },
-              h('strong', null, '正文重生成'),
-              config?.generationReady && h('p', null, '自动生成新正文：在「设置 → DSH Tavern → 剧情」选择 STcontext，再将正文生成方式设为「通过 Tool Call 调用插件」。当前面板仍可手动重生成最新正文。'),
-              h('p', null, status ? (labels[phase] || phase) : '尚未开始'),
-              status?.result?.warning && h('p', { role: 'status', style: { whiteSpace: 'pre-wrap' } }, status.result.warning),
-              status?.result?.settlementStatus === 'failed' && h('p', { role: 'status' }, '新正文已保留，后台结算失败。请在宿主中重试结算。'),
-              status?.error && h('p', { role: 'alert', style: { color: '#dc6c65', whiteSpace: 'pre-wrap' } }, typeof status.error === 'string' ? status.error : status.error.message),
-              h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
-                h('button', { style: button, disabled: busy || !selected || !modelKey || !config?.hostReady, onClick: () => act(async () => { await call('settings', settings); setReport(null); const value = await call('start', { gameId }); setStatus(value); }) }, '重新生成最新正文'),
-                h('button', { style: button, disabled: !canCancel || working, onClick: () => act(async () => { const value = await call('cancel', { gameId, id: status.id }); setStatus(value); }) }, '取消生成'),
-                h('button', { style: button, disabled: working, onClick: () => act(readRequest) }, '查看本次请求')),
-              h('p', { style: { fontSize: 12, opacity: .75 } }, '只发送用户可见的历史。生成结果经过预设输出正则一次处理后，由宿主替换正文并从起点重新结算。')),
-            activeReport && h('details', { style: box, open: true }, h('summary', null, '兼容报告'),
-              h('p', null, '顺序 ' + activeReport.order + ' · ' + activeReport.enabledPrompts + ' 项提示词 · ' + activeReport.regexCount + ' 条原生正则 · ' + activeReport.protocol),
-              ...(activeReport.blockers || []).map((text, index) => h('p', { key: 'b' + index, style: { color: '#dc6c65' } }, text)),
-              h('ul', null, ...(activeReport.warnings || []).map((text, index) => h('li', { key: index }, text))),
-              activeReport.historyRules?.length > 0 && h('details', null, h('summary', null, '不对历史正文重复执行的规则'), h('ul', null, ...activeReport.historyRules.map(rule => h('li', { key: rule.index }, rule.name))))),
-            requestShown && h('section', { style: box },
-              h('div', { style: { display: 'flex', gap: 8 } }, h('button', { style: button, onClick: () => download('stcontext-request.json', request) }, '下载完整请求'), h('button', { style: button, onClick: () => setRequestShown(false) }, '收起')),
-              h('pre', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 12, maxHeight: 500, overflow: 'auto' } }, request)));
+              h('div', { className: 'stc-row stc-between' }, h('p', { className: 'stc-muted' }, '沿用 DSH 已配置的服务商'),
+                h('button', { className: 'stc-button stc-quiet', disabled: busy || modelsLoading, onClick: refreshModels }, modelsLoading ? '正在读取模型…' : '刷新模型列表')),
+              !modelKey && message('请先选择插件正文模型。旧版前台/后台跟随设置需重新选择。'),
+              !modelsLoading && !modelOptions.length && message('暂无可选文本模型，请先在 DSH 配置模型服务商，再刷新列表。'),
+              modelError && message(modelError, 'error', 'alert'),
+              ...catalog.filter(group => group.error).map(group => h('p', { key: group.provider, className: 'stc-message stc-error', role: 'alert' }, group.providerName + '：' + group.error)),
+              h('div', { className: 'stc-card-footer stc-row stc-between' }, h('span', { className: 'stc-muted', role: 'status' }, settingsDirty ? '有未保存的更改' : '设置对所有会话生效'),
+                h('button', { className: 'stc-button', disabled: busy || !config, onClick: () => act(async () => { await saveSettings(); setNotice('设置已保存'); }) }, '保存设置')))),
+            h('section', { className: 'stc-card stc-generation', 'aria-label': '正文重生成' },
+              h('div', { className: 'stc-card-title' }, h('h3', null, '正文重生成'),
+                h('span', { className: 'stc-badge' + (failed ? ' stc-badge-error' : !status ? ' stc-badge-neutral' : ''), role: 'status', 'aria-live': 'polite' },
+                  h('span', { className: 'stc-dot', 'aria-hidden': true }), status ? (labels[phase] || phase) : '尚未开始')),
+              h('p', { className: 'stc-muted' }, !config ? '正在读取配置…' : !selected ? '先导入并选择预设，再生成最新正文。' : !modelKey ? '选择插件正文模型后即可开始。' : '使用所选预设与完整可见历史，替换最新一轮正文。'),
+              status?.result?.warning && message(status.result.warning),
+              status?.result?.settlementStatus === 'failed' && message('新正文已保留，后台结算失败。请在宿主中重试结算。'),
+              status?.error && message(typeof status.error === 'string' ? status.error : status.error.message, 'error', 'alert'),
+              h('div', { className: 'stc-actions' }, h('div', { className: 'stc-row' },
+                h('button', { className: 'stc-button stc-primary', disabled: busy || !ready, onClick: () => act(async () => { await saveSettings(); setReport(null); const value = await call('start', { gameId }); setStatus(value); }) }, '重新生成最新正文'),
+                h('button', { className: 'stc-button', disabled: !canCancel || working, onClick: () => act(async () => { const value = await call('cancel', { gameId, id: status.id }); setStatus(value); }) }, '取消生成')),
+                h('button', { className: 'stc-button stc-quiet', disabled: working, onClick: () => act(readRequest) }, '查看本次请求')),
+              h('details', { className: 'stc-details' }, h('summary', null, '生成说明'),
+                h('div', { className: 'stc-details-body' },
+                  h('p', { className: 'stc-muted' }, '开始重生成时会自动保存当前设置。生成阶段可取消；正文提交后继续完成同步与结算。'),
+                  config?.generationReady && h('p', { className: 'stc-muted' }, '自动生成新正文：在「设置 → DSH Tavern → 剧情」选择 STcontext，再将正文生成方式设为「通过 Tool Call 调用插件」。')))),
+            activeReport && h('details', { className: 'stc-card stc-report', key: (selected?.id || '') + (activeReport.blockers?.length ? '-blocked' : ''), open: activeReport.blockers?.length ? true : undefined },
+              h('summary', null, '兼容报告', badge(activeReport.blockers?.length ? activeReport.blockers.length + ' 项待处理' : activeReport.warnings?.length ? activeReport.warnings.length + ' 项提示' : '检查通过', activeReport.blockers?.length ? 'error' : 'neutral')),
+              h('div', { className: 'stc-details-body' },
+                h('p', { className: 'stc-meta' }, '顺序 ' + activeReport.order + ' · ' + activeReport.protocol),
+                ...(activeReport.blockers || []).map((text, index) => h('p', { key: 'b' + index, className: 'stc-message stc-error', role: 'alert' }, text)),
+                h('ul', null, ...(activeReport.warnings || []).map((text, index) => h('li', { key: index }, text))),
+                activeReport.historyRules?.length > 0 && h('details', null, h('summary', null, '不对历史正文重复执行的规则'), h('ul', null, ...activeReport.historyRules.map(rule => h('li', { key: rule.index }, rule.name)))),
+                selected && h('p', { className: 'stc-meta' }, 'SHA-256：' + selected.digest))),
+            requestShown && h('section', { className: 'stc-card stc-request', 'aria-label': '请求预览' },
+              h('div', { className: 'stc-card-title' }, h('div', null, h('h3', null, '请求预览'), h('p', { className: 'stc-request-name' }, 'stcontext-request.json')),
+                h('div', { className: 'stc-row' }, h('button', { className: 'stc-button', onClick: () => download('stcontext-request.json', request) }, '下载完整请求'), h('button', { className: 'stc-button stc-quiet', onClick: () => setRequestShown(false) }, '收起'))),
+              h('pre', null, request)));
         }
         ui.registerPanel({ id: 'st-context', title: 'STcontext', render: ({ gameId }) => h(Panel, { gameId }) });
         ui.registerComposerAction({
