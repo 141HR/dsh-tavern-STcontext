@@ -96,7 +96,7 @@ test('real Kunlun import -> host materials/plugin DSH request -> replacement/nat
     publish: async () => {} });
   const owner = 'dsh-tavern-STcontext', handlers = new Map();
   let saved;
-  apply({ llm, agents: { get: () => ({ model: { current: () => ({ provider: 'fixture', model: 'fixture' }) } }) }, tavern: {
+  apply({ get: () => undefined, llm, agents: { get: () => ({ model: { current: () => ({ provider: 'fixture', model: 'fixture' }) } }) }, tavern: {
     readPluginData: async () => clone(saved), savePluginData: async ({ data }) => { saved = clone(data); },
     handle: (key, handler) => handlers.set(key, handler), onGameRemoved() {},
     bodyRegenerator: entry => jobs.register(owner, { ...entry, generate: async input => { candidate = await entry.generate(input); return candidate; } }),

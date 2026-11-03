@@ -28,6 +28,8 @@ Copy-Item -LiteralPath '.\lib' -Destination $stcontextTarget -Recurse -Force
 
 复制后重启 Tavern，在「设置 → DSH Tavern → 插件」检查 `dsh-tavern-STcontext` 已加载；曾停用过此插件时在这里启用。开发更新同样复制上述运行文件并重启。不要将工作目录直接改成已安装宿主的程序目录。
 
+如果 0.2.0 在导入时提示“没有名为 dsh-tavern-stcontext/upload/begin 的插件处理函数”，请升级到 0.2.1 或更新版本并重启 Tavern。0.2.0 的宿主端依赖声明不兼容 DSH 0.2.1 的 Cordis 加载器，会导致面板已显示但宿主端未启动；刷新页面不足以重新加载宿主端。
+
 也可将 `package.json`、`index.mjs`、`client.js`、`lib/` 放在 ZIP 根目录，通过上述插件管理页面上传安装。
 
 在侧栏「＋ → STcontext」或输入框上方的「STcontext 重生成」打开面板：
@@ -62,5 +64,7 @@ Copy-Item -LiteralPath '.\lib' -Destination $stcontextTarget -Recurse -Force
 跨仓库联调额外设置 `STCONTEXT_HOST_REPO` 为新版 Tavern 工作区路径，并用该宿主的 `bin/test-tavern.mjs` 运行本插件的 `tests/host-smoke.test.mjs`。测试通过实际宿主材料导出、任务服务、插件直接调用 DSH 和正文替换流程，模型回包使用测试桩，存档只在内存中。插件的 `generation.test.mjs` 在设置 `DSH_BOOT_MODULE` 时还会验证真实 DSH LLM 服务。需要可用的 DSH Session 测试运行时；可显式指定 `DSH_BOOT_MODULE`。
 
 设置 `STCONTEXT_HOST_REPO` 后，`tests/host-generation.test.mjs` 还会验证新正文从宿主准备、STcontext 编译、工具返回到保存和一次结算的完整链路；此测试使用最小测试预设，不需要用户预设文件。
+
+同时设置 `DSH_BOOT_MODULE` 和 `STCONTEXT_HOST_REPO` 后，`tests/host-loading.test.mjs` 会通过真实 Cordis 和 Tavern 保护入口验证插件加载、预设导入、卸载与重新加载，并覆盖有、无可选 `tokenMeter` 服务的环境。
 
 尚未宣称兼容全部 SillyTavern 扩展或所有版本的宏引擎。预设组织改变是否降低模型拒绝率，需要结合所选模型实际验证。

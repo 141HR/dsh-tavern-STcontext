@@ -21,7 +21,7 @@ function harness({ hostReady = true } = {}) {
     bodyRegenerationStatus: async () => structuredClone(status),
     cancelBodyRegeneration: async () => (status = { ...status, status: 'cancelled' }),
   });
-  apply({ tavern });
+  apply({ tavern, get: () => undefined });
   const React = {
     createElement: (type, props, ...children) => ({ type, props: props || {}, children: children.flat(Infinity).filter(x => x !== null && x !== undefined && x !== false) }),
     useState(initial) {

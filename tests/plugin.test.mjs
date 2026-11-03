@@ -34,7 +34,9 @@ function fixture(ready = true) {
         yield { type: 'finish', reason: { kind: 'stop' } };
       } };
   } };
-  apply({ tavern, llm, agents: { get: () => ({ model: { current: () => ({ provider: 'fixture', model: 'story', reasoningEffort: 'high' }) } }) } });
+  apply({ tavern, llm, get: key => { assert.equal(key, 'tokenMeter'); },
+    get tokenMeter() { assert.fail('optional services must be read through ctx.get'); },
+    agents: { get: () => ({ model: { current: () => ({ provider: 'fixture', model: 'story', reasoningEffort: 'high' }) } }) } });
   return { handlers, tavern, get provider() { return provider; }, get generator() { return generator; }, call: (key, value) => handlers.get('dsh-tavern-stcontext/' + key)(value),
     generate: (response, current = false) => { respond = response; return (current ? generator : provider).generate({ materials: current ? { ...material, trigger: 'normal', target: { kind: 'generate', turn: 2 } } : material, signal: controller.signal, get runIsolated() { assert.fail('must use DSH directly, including on an older host'); } }); } };
 }

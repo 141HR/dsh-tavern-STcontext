@@ -4,11 +4,12 @@ import { runCompiler } from './lib/worker-client.mjs';
 import { createDshGeneration, selectGenerationModel } from './lib/generation.mjs';
 
 export const name = 'dsh-tavern-STcontext';
-export const inject = { required: ['tavern', 'llm', 'agents'], optional: ['tokenMeter'] };
+// DSH Cordis expects service names, not the legacy required/optional shape.
+export const inject = ['tavern', 'llm', 'agents'];
 const PREFIX = 'dsh-tavern-stcontext';
 const PROVIDER = 'st-context';
 export function apply(ctx) {
-  const generateBody = createDshGeneration({ llm: ctx.llm, meter: ctx.tokenMeter,
+  const generateBody = createDshGeneration({ llm: ctx.llm, meter: ctx.get('tokenMeter'),
     selection: (gameId, slot) => selectGenerationModel(ctx, gameId, slot) });
   const store = createPresetStore(ctx.tavern), previews = new Map();
   const capable = () => typeof ctx.tavern.bodyRegenerator === 'function' && typeof ctx.tavern.startBodyRegeneration === 'function';

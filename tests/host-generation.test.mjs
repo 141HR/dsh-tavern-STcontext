@@ -36,7 +36,7 @@ test('host prepares current turn -> STcontext -> tool receipt -> one processed b
     bodyGeneration: () => generation.route('session'), planner: { plan: async () => ({ text: '写作要求' }) }, projectReply: projectReplyLayers });
   let pluginData, requests = 0;
   const handlers = new Map();
-  apply({ tavern: { handle: (name, callback) => handlers.set(name, callback),
+  apply({ get: () => undefined, tavern: { handle: (name, callback) => handlers.set(name, callback),
     readPluginData: async () => copy(pluginData), savePluginData: async ({ data }) => { pluginData = copy(data); },
     bodyGenerator: entry => providers.register('dsh-tavern-STcontext', entry) },
     agents: { get: () => ({ model: { current: () => ({ provider: 'test', model: 'test' }) } }) },
