@@ -7,11 +7,11 @@ import { apply } from '../index.mjs';
 
 // Opt-in contract smoke against a host checkout and a user-owned preset. Neither is bundled.
 const enabled = process.env.STCONTEXT_HOST_REPO && process.env.STCONTEXT_PRESET_FIXTURE;
-test('real Kunlun import -> host materials/isolated runner -> replacement/native sync/start-state settlement', { skip: !enabled, timeout: 20000 }, async () => {
+test('real Kunlun import -> host materials/plugin DSH request -> replacement/native sync/start-state settlement', { skip: !enabled, timeout: 20000 }, async () => {
   const host = async path => import(pathToFileURL(resolve(process.env.STCONTEXT_HOST_REPO, path)).href);
-  const [{ createBodyRegenerationJobs }, { createIsolatedGeneration }, { createRoundHistory }, { createStoryTimeline },
+  const [{ createBodyRegenerationJobs }, { createRoundHistory }, { createStoryTimeline },
     { captureBodyRegenerationSource, buildBodyRegenerationMaterials }, { Session }, { appendSessionEvent }] = await Promise.all([
-    host('tavern-plugin/lib/domain/body-regeneration-jobs.js'), host('tavern-plugin/lib/domain/isolated-generation.js'),
+    host('tavern-plugin/lib/domain/body-regeneration-jobs.js'),
     host('tavern-plugin/lib/domain/round-history.js'), host('tavern-plugin/lib/domain/story-timeline.js'),
     host('tavern-plugin/lib/domain/body-regeneration-materials.js'), host('tests/fixtures/dsh-session-host.mjs'),
     host('tavern-plugin/lib/domain/session-events.js'),
@@ -74,7 +74,7 @@ test('real Kunlun import -> host materials/isolated runner -> replacement/native
     present: async chat => chat,
   });
   const rawOutput = '<talk>过程</talk><content><hidden>极其平静的正文</hidden></content>';
-  const runner = createIsolatedGeneration({ selection: async () => ({ provider: 'fixture', model: 'fixture' }), llm: {
+  const llm = {
     async prepareCall(config, signal, transform) {
       const controls = transform(config, { context: { contextWindow: 1000000 }, defaultMaxTokens: 4096 });
       return { config: controls, stream: async function* (options) {
@@ -90,13 +90,13 @@ test('real Kunlun import -> host materials/isolated runner -> replacement/native
         yield { type: 'finish', reason: { kind: 'tool-calls' } };
       } };
     },
-  } });
+  };
   const jobs = createBodyRegenerationJobs({ requireGame: async () => ({ sessionId: 'session' }), allowed: async () => true,
     run: input => history.regenerateWithProvider({ ...input, onPhase: phase => { phases.push(phase); input.onPhase(phase); } }),
-    runIsolated: runner, publish: async () => {} });
+    publish: async () => {} });
   const owner = 'dsh-tavern-STcontext', handlers = new Map();
   let saved;
-  apply({ tavern: {
+  apply({ llm, agents: { get: () => ({ model: { current: () => ({ provider: 'fixture', model: 'fixture' }) } }) }, tavern: {
     readPluginData: async () => clone(saved), savePluginData: async ({ data }) => { saved = clone(data); },
     handle: (key, handler) => handlers.set(key, handler), onGameRemoved() {},
     bodyRegenerator: entry => jobs.register(owner, { ...entry, generate: async input => { candidate = await entry.generate(input); return candidate; } }),

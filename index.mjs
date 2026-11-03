@@ -1,12 +1,15 @@
 import { createPresetStore } from './lib/store.mjs';
 import { inspectPreset } from './lib/preset.mjs';
 import { runCompiler } from './lib/worker-client.mjs';
+import { createDshGeneration, selectGenerationModel } from './lib/generation.mjs';
 
 export const name = 'dsh-tavern-STcontext';
-export const inject = ['tavern'];
+export const inject = { required: ['tavern', 'llm', 'agents'], optional: ['tokenMeter'] };
 const PREFIX = 'dsh-tavern-stcontext';
 const PROVIDER = 'st-context';
 export function apply(ctx) {
+  const generateBody = createDshGeneration({ llm: ctx.llm, meter: ctx.tokenMeter,
+    selection: (gameId, slot) => selectGenerationModel(ctx, gameId, slot) });
   const store = createPresetStore(ctx.tavern), previews = new Map();
   const capable = () => typeof ctx.tavern.bodyRegenerator === 'function' && typeof ctx.tavern.startBodyRegeneration === 'function';
   function requireHost() { if (!capable()) throw new Error('当前宿主缺少插件重生成接口，请先更新 DSH Tavern'); }
@@ -43,7 +46,7 @@ export function apply(ctx) {
   if (!capable()) return;
   ctx.tavern.bodyRegenerator({
     name: PROVIDER, title: 'STcontext 重生成',
-    async generate({ materials, runIsolated, signal }) {
+    async generate({ materials, signal }) {
       const active = await store.active();
       signal?.throwIfAborted();
       const compiled = await runCompiler('compile', { document: active.document, materials, settings: active.settings }, { signal });
@@ -52,7 +55,7 @@ export function apply(ctx) {
       previews.delete(materials.gameId);
       previews.set(materials.gameId, { json, report, createdAt: Date.now() });
       while (previews.size > 3) previews.delete(previews.keys().next().value);
-      const response = await runIsolated(compiled.request, { signal });
+      const response = await generateBody({ gameId: materials.gameId, request: compiled.request, signal });
       signal?.throwIfAborted();
       const result = await runCompiler('output', { document: active.document, response, toolName: compiled.toolName }, { signal });
       return { ...result, metadata: { ...result.metadata, preset: active.name, protocol: report.protocol } };

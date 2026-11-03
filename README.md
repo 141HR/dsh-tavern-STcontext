@@ -6,7 +6,9 @@
 
 需要新版 DSH Tavern 的插件 API 7（`bodyRegeneration: 1`）：提供 `bodyRegenerator`、`startBodyRegeneration`、`bodyRegenerationStatus`、`cancelBodyRegeneration` 接口。仅修改宿主工作区代码不会更新已安装的 Profile；开发阶段须先将相应宿主版本部署到所用 Profile 并重启。旧宿主可以保存预设，但不能启动重生成。
 
-插件没有第三方依赖，不需要 `npm install` 或构建，也不需要安装 SillyTavern。
+模型请求由插件直接使用 DSH 的 `llm` 服务发送；需要 DSH 0.2.1 的 `prepareCall`、`agent.model.current()` 接口，可选复用 `tokenMeter`。前台模型读取当前 Agent 的选择，后台模型通过 Tavern 已有的 `backgroundModel` 读取。插件负责预算检查、取消和响应校验，宿主只负责重生成生命周期。
+
+插件没有额外第三方依赖，不需要 `npm install` 或构建，也不需要安装 SillyTavern。
 
 本地目录安装：在 PowerShell 中进入本插件目录，执行以下命令，将运行文件复制到 Tavern 用户插件目录。设置过 `DSH_HOME` 时应使用实际启动 Tavern 的同一个值；默认数据目录为 `%USERPROFILE%\.dsh\profile-data\tavern\data`。
 
@@ -51,6 +53,6 @@ Copy-Item -LiteralPath '.\lib' -Destination $stcontextTarget -Recurse -Force
 
 运行 `npm test`。可选设置 `STCONTEXT_PRESET_FIXTURE` 为本地预设路径后运行测试，会验证该文件的请求编译与一次输出正则；测试不会发送模型请求，也不会把该文件复制进仓库。
 
-跨仓库联调额外设置 `STCONTEXT_HOST_REPO` 为新版 Tavern 工作区路径，并用该宿主的 `bin/test-tavern.mjs` 运行本插件的 `tests/host-smoke.test.mjs`。测试通过实际宿主材料导出、任务服务、独立请求和正文替换流程，模型回包使用测试桩，存档只在内存中。需要可用的 DSH Session 测试运行时；可显式指定 `DSH_BOOT_MODULE`。
+跨仓库联调额外设置 `STCONTEXT_HOST_REPO` 为新版 Tavern 工作区路径，并用该宿主的 `bin/test-tavern.mjs` 运行本插件的 `tests/host-smoke.test.mjs`。测试通过实际宿主材料导出、任务服务、插件直接调用 DSH 和正文替换流程，模型回包使用测试桩，存档只在内存中。插件的 `generation.test.mjs` 在设置 `DSH_BOOT_MODULE` 时还会验证真实 DSH LLM 服务。需要可用的 DSH Session 测试运行时；可显式指定 `DSH_BOOT_MODULE`。
 
 尚未宣称兼容全部 SillyTavern 扩展或所有版本的宏引擎。预设组织改变是否降低模型拒绝率，需要结合所选模型实际验证。

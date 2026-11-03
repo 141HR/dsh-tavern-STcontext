@@ -10,7 +10,7 @@ const material = { schemaVersion: 1, gameId: 'test', target: { turn: 2 }, card: 
   persona: { name: '玩家' }, worldbook: { context: '' }, writingRequirements: [], history: [{ role: 'assistant', text: '开场白' }],
   input: { raw: '本轮输入', projected: '本轮输入' }, beforeState: {}, completeness: { history: 'all-visible' } };
 function fixture(ready = true) {
-  let saved, provider, latest;
+  let saved, provider, latest, respond;
   const handlers = new Map(), controller = new AbortController();
   const tavern = {
     readPluginData: async () => structuredClone(saved),
@@ -24,9 +24,18 @@ function fixture(ready = true) {
     bodyRegenerationStatus: async () => latest,
     cancelBodyRegeneration: async () => ({ ...latest, status: 'cancelled' }),
   });
-  apply({ tavern });
+  const llm = { async prepareCall(config, signal, configure) {
+    const { provider, model, ...controls } = config;
+    return { config: { ...configure(controls, { context: { contextWindow: 128000 } }), provider, model },
+      async *stream(request) {
+        const response = await respond(request);
+        yield { type: 'text-delta', index: 0, text: response.text };
+        yield { type: 'finish', reason: { kind: 'stop' } };
+      } };
+  } };
+  apply({ tavern, llm, agents: { get: () => ({ model: { current: () => ({ provider: 'fixture', model: 'story', reasoningEffort: 'high' }) } }) } });
   return { handlers, tavern, get provider() { return provider; }, call: (key, value) => handlers.get('dsh-tavern-stcontext/' + key)(value),
-    generate: runIsolated => provider.generate({ materials: material, runIsolated, signal: controller.signal }) };
+    generate: response => { respond = response; return provider.generate({ materials: material, signal: controller.signal, get runIsolated() { assert.fail('must use DSH directly, including on an older host'); } }); } };
 }
 async function importPreset(f) {
   const text = JSON.stringify(minimal), { id } = await f.call('upload/begin', { name: 'example.json', size: text.length });
@@ -40,8 +49,10 @@ test('host entry imports without a bundled preset and runs the owned provider', 
   await importPreset(f);
   assert.equal((await f.call('start', { gameId: 'test' })).name, 'st-context');
   const output = await f.generate(async request => {
-    assert.equal(request.model, 'foreground');
-    assert.equal(request.messages.at(-1).content, '本轮输入');
+    assert.equal(request.provider, 'fixture');
+    assert.equal(request.model, 'story');
+    assert.equal(request.reasoningEffort, 'high');
+    assert.equal(request.messages.at(-1).content[0].text, '本轮输入');
     return { text: 'X', toolCalls: [], finishReason: { kind: 'stop' } };
   });
   assert.equal(output.text, 'XX');
