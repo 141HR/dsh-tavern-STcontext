@@ -10,8 +10,8 @@ const simplePreset = { prompts: [{ identifier: 'chatHistory', marker: true }],
 
 // Drive the real client and host entry with a tiny hook scheduler; no DOM or framework dependency.
 function harness({ hostReady = true, initialModel, initialSettings = {}, catalogFailure = false, resolveModelInfo } = {}) {
-  const hooks = [], effects = [], pending = new Set(), timers = new Map(), calls = [], downloads = [];
-  let cursor = 0, dirty = true, tree, component, properties, panel, action, overlay, registered, saved, status = null, serial = 0;
+  const hooks = [], effects = [], pending = new Set(), timers = new Map(), calls = [], downloads = [], disposers = [];
+  let cursor = 0, dirty = true, tree, component, properties, panel, action, overlay, registered, settingsSection, settingsSpec, saved, status = null, serial = 0;
   const handlers = new Map();
   saved = { schemaVersion: 1, presets: [], activeId: null, settings: { ...initialSettings, ...(initialModel === undefined ? {} : { model: initialModel }) } };
   let modelFailure = catalogFailure;
@@ -64,7 +64,17 @@ function harness({ hostReady = true, initialModel, initialSettings = {}, catalog
     Blob, URL: { createObjectURL: blob => { const key = 'blob:' + serial++; blobs.set(key, blob); return key; }, revokeObjectURL: key => blobs.delete(key) },
     document: { createElement: () => ({ click() { downloads.push({ name: this.download, blob: blobs.get(this.href) }); } }) },
   });
-  registered.factory(name => { assert.equal(name, 'react'); return React; }).apply({ tavernUi: ui });
+  registered.factory(name => { assert.equal(name, 'react'); return React; }).apply({
+    tavernUi: ui,
+    effect: run => { disposers.push(run()); },
+    slots: {
+      inject: (name, run) => { assert.equal(name, 'settings.section'); return run(); },
+      register: (spec, render) => {
+        assert.equal(spec.name, 'settings.section'); settingsSpec = spec; settingsSection = render;
+        return () => { settingsSpec = null; settingsSection = null; };
+      },
+    },
+  });
   function render() {
     if (!dirty || !component) return;
     dirty = false; cursor = 0; tree = component(properties);
@@ -85,10 +95,12 @@ function harness({ hostReady = true, initialModel, initialSettings = {}, catalog
   const contents = node => typeof node === 'string' || typeof node === 'number' ? String(node) : (node?.children || []).map(contents).join('');
   return {
     calls, downloads, get status() { return status; }, set status(value) { status = value; },
+    get settingsSpec() { return settingsSpec; },
     get saved() { return structuredClone(saved); }, set modelFailure(value) { modelFailure = value; },
     async mount(useAction = false) {
       let element;
-      if (useAction) { await action.run({ gameId: 'game' }); element = overlay.render({ close() {} }); }
+      if (useAction === 'settings') element = settingsSection();
+      else if (useAction) { await action.run({ gameId: 'game' }); element = overlay.render({ close() {} }); }
       else element = panel.render({ gameId: 'game' });
       component = element.type; properties = element.props; await flush();
     },
@@ -102,10 +114,31 @@ function harness({ hostReady = true, initialModel, initialSettings = {}, catalog
     selectValue: label => nodes().find(node => node.type === 'select' && node.props['aria-label'] === label)?.props.value,
     text: () => contents(tree),
     disabled: label => nodes().find(node => node.type === 'button' && contents(node) === label)?.props.disabled,
-    destroy() { for (const item of hooks) item?.cleanup?.(); timers.clear(); },
+    destroy() { for (const item of hooks) item?.cleanup?.(); timers.clear(); for (const dispose of disposers) dispose?.(); },
   };
 }
 const file = (text, name = 'imported.json') => ({ name, size: Buffer.byteLength(text), text: async () => text });
+
+test('native settings configures presets and models without a game and unregisters on unload', async () => {
+  const h = harness();
+  try {
+    assert.equal(h.settingsSpec.id, 'dsh-tavern-stcontext');
+    assert.equal(h.settingsSpec.label(), 'STcontext');
+    await h.mount('settings');
+    await h.input(file(JSON.stringify(simplePreset)));
+    await h.choose('插件正文模型', JSON.stringify({ provider: 'own', model: 'story' }));
+    await h.choose('推理等级', 'high');
+    await h.click('保存设置');
+    assert.equal(h.saved.presets.length, 1);
+    assert.deepEqual(h.saved.settings.model, { provider: 'own', model: 'story', reasoningEffort: 'high' });
+    assert.match(h.text(), /设置已保存/);
+    assert.match(h.text(), /打开游戏后/);
+    assert.equal(h.disabled('重新生成最新正文'), undefined);
+    assert.equal(h.disabled('查看本次请求'), undefined);
+    assert.equal(h.calls.some(call => ['status', 'start', 'cancel', 'request'].includes(call.name)), false);
+  } finally { h.destroy(); }
+  assert.equal(h.settingsSpec, null);
+});
 
 test('client imports in chunks, exports exact JSON, saves controls, starts and cancels', async () => {
   const h = harness();

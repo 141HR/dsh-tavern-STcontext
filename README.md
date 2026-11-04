@@ -34,14 +34,14 @@ Copy-Item -LiteralPath '.\lib' -Destination $stcontextTarget -Recurse -Force
 
 也可将 `package.json`、`index.mjs`、`client.js`、`lib/` 放在 ZIP 根目录，通过上述插件管理页面上传安装。
 
-在侧栏「＋ → STcontext」或输入框上方的「STcontext 重生成」打开面板：
+在 DeepSeek Harness「设置 → STcontext」可直接导入预设、选择模型并保存，无需先打开游戏。需要重生成正文或查看本次请求时，在游戏中通过侧栏「＋ → STcontext」或输入框上方的「STcontext 重生成」打开面板：
 
 1. 导入预设 JSON，查看兼容报告；预设不会编译进源码。
 2. 选择预设和「插件正文模型」，按需设置「推理等级」，点击「保存设置」；请求模式位于「预设适配」中。等级按所选模型的详细能力加载；没有可选等级时显示「模型默认」并禁用选择，不发送额外的推理等级参数。切换模型会清除旧模型的等级设置，读取失败时可通过「刷新模型列表」重试。
 3. 点击「重新生成最新正文」。生成阶段可取消；正文提交后继续完成主会话同步和结算，此时不再取消。
 4. 可查看或下载本次实际请求。新正文提交后结算失败时，通过宿主重试结算；不会撤掉已提交正文。
 
-面板按预设、正文模型和生成操作分区，窄屏自动纵向排列。兼容报告和生成说明默认收起，阻止生成的问题会自动展开显示。输出 token 上限、上下文预算和温度不再提供界面控件；已有参数配置继续保留，未配置的参数仍沿用预设或模型默认值。
+面板按预设、正文模型和生成操作分区，窄屏自动纵向排列。侧栏和弹窗在可用高度内上下滚动，设置页沿用宿主的滚动区域。兼容报告和生成说明默认收起，阻止生成的问题会自动展开显示。输出 token 上限、上下文预算和温度不再提供界面控件；已有参数配置继续保留，未配置的参数仍沿用预设或模型默认值。
 
 预设以压缩形式保存在当前宿主的插件数据中，更新插件不会覆盖。支持导出原文件、切换和移除。文件最多 2 MB，全部预设压缩后的存储合计受宿主 256 KB 上限约束。导入中的分块不持久化。
 
@@ -64,6 +64,8 @@ Copy-Item -LiteralPath '.\lib' -Destination $stcontextTarget -Recurse -Force
 ## 验证
 
 运行 `npm test`。可选设置 `STCONTEXT_PRESET_FIXTURE` 为本地预设路径后运行测试，会验证该文件的请求编译与一次输出正则；测试不会发送模型请求，也不会把该文件复制进仓库。
+
+设置 `STCONTEXT_HOST_REPO` 后，`tests/client-browser.test.mjs` 使用宿主的 Playwright 与 React 开发依赖检查侧栏、弹窗和设置页在窄屏、低高度窗口中的滚动和保存。可通过 `STCONTEXT_BROWSER_EXECUTABLE` 指定本机 Chromium 或 Edge 路径。
 
 跨仓库联调额外设置 `STCONTEXT_HOST_REPO` 为新版 Tavern 工作区路径，并用该宿主的 `bin/test-tavern.mjs` 运行本插件的 `tests/host-smoke.test.mjs`。测试通过实际宿主材料导出、任务服务、插件直接调用 DSH 和正文替换流程，模型回包使用测试桩，存档只在内存中。插件的 `generation.test.mjs` 在设置 `DSH_BOOT_MODULE` 时还会验证真实 DSH LLM 服务。需要可用的 DSH Session 测试运行时；可显式指定 `DSH_BOOT_MODULE`。
 
