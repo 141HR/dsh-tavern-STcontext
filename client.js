@@ -86,6 +86,7 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
           const [error, setError] = React.useState(''), [notice, setNotice] = React.useState(''), [working, setWorking] = React.useState(false);
           const [settings, setSettings] = React.useState({}), [report, setReport] = React.useState(null);
           const [catalog, setCatalog] = React.useState([]), [modelsLoading, setModelsLoading] = React.useState(false), [modelError, setModelError] = React.useState('');
+          const [reasoning, setReasoning] = React.useState({ key: '', efforts: [], loading: false, error: '' });
           const [request, setRequest] = React.useState(''), [requestShown, setRequestShown] = React.useState(false);
           const file = React.useRef(null), alive = React.useRef(true);
           const busy = working || !ended(status);
@@ -160,9 +161,31 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
             label: group.providerName + ' · ' + model.name, efforts: model.efforts || [],
           })));
           const selectedModel = modelOptions.find(model => model.key === modelKey);
-          const efforts = selectedModel?.efforts || [];
+          React.useEffect(() => {
+            let active = true;
+            if (modelKey) {
+              setReasoning({ key: modelKey, efforts: [], loading: true, error: '' });
+              call('model-reasoning', JSON.parse(modelKey)).then(value => {
+                if (!active) return;
+                const efforts = value.efforts || [];
+                setReasoning({ key: modelKey, efforts, loading: false, error: '' });
+                // A confirmed lack of levels must not keep a stale saved override.
+                if (!efforts.length) setSettings(current => {
+                  if (!current.model?.reasoningEffort || JSON.stringify({ provider: current.model.provider, model: current.model.model }) !== modelKey) return current;
+                  const { reasoningEffort, ...model } = current.model;
+                  return { ...current, model };
+                });
+              }, err => {
+                if (active) setReasoning({ key: modelKey, efforts: [], loading: false, error: err.message || String(err) });
+              });
+            }
+            return () => { active = false; };
+          }, [modelKey, catalog]);
+          const efforts = reasoning.key === modelKey ? reasoning.efforts : [];
+          const reasoningLoading = !!modelKey && (modelsLoading || reasoning.key !== modelKey || reasoning.loading);
+          const reasoningError = reasoning.key === modelKey ? reasoning.error : '';
           const settingsDirty = config && JSON.stringify(editableSettings(settings)) !== JSON.stringify(editableSettings(config.settings));
-          const ready = !!(config?.hostReady && selected && modelKey);
+          const ready = !!(config?.hostReady && selected && modelKey && !reasoningLoading);
           const failed = status?.status === 'failed';
           const message = (text, kind = 'notice', role = 'status') => h('p', { className: 'stc-message stc-' + kind, role }, text);
           const badge = (text, tone = '') => h('span', { className: 'stc-badge' + (tone ? ' stc-badge-' + tone : '') }, text);
@@ -204,13 +227,17 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
                   h('option', { value: '' }, '请选择模型'),
                   modelKey && !selectedModel && h('option', { value: modelKey }, settings.model.provider + ' · ' + settings.model.model + '（未在列表中找到）'),
                   ...modelOptions.map(model => h('option', { key: model.key, value: model.key }, model.label)))),
-              (efforts.length > 0 || settings.model?.reasoningEffort) && h('label', { className: 'stc-field' }, '推理强度',
-                h('select', { 'aria-label': '推理强度', className: 'stc-select', value: settings.model.reasoningEffort || '', disabled: busy,
+              h('label', { className: 'stc-field' }, '推理等级',
+                h('select', { 'aria-label': '推理等级', className: 'stc-select', value: settings.model?.reasoningEffort || '', disabled: busy || !modelKey || reasoningLoading || !!reasoningError || !efforts.length,
                   onChange: event => { const model = { ...settings.model }; if (event.target.value) model.reasoningEffort = event.target.value; else delete model.reasoningEffort; setSettings({ ...settings, model }); } },
                   h('option', { value: '' }, '模型默认'),
-                  settings.model.reasoningEffort && !efforts.some(item => item.id === settings.model.reasoningEffort)
+                  settings.model?.reasoningEffort && !efforts.some(item => item.id === settings.model.reasoningEffort)
                     && h('option', { value: settings.model.reasoningEffort }, settings.model.reasoningEffort + '（未在列表中找到）'),
                   ...efforts.map(item => h('option', { key: item.id, value: item.id }, item.name)))),
+              h('p', { className: 'stc-muted', role: 'status' }, !modelKey ? '选择模型后显示其支持的推理等级。' : reasoningLoading ? '正在读取推理等级…'
+                : reasoningError ? '暂时无法确认该模型的推理等级，已保留当前设置。'
+                : efforts.length ? '仅列出该模型支持的等级；模型默认不指定推理等级。' : '该模型未提供可选推理等级，使用模型默认。'),
+              reasoningError && message(reasoningError, 'error', 'alert'),
               h('div', { className: 'stc-row stc-between' }, h('p', { className: 'stc-muted' }, '沿用 DSH 已配置的服务商'),
                 h('button', { className: 'stc-button stc-quiet', disabled: busy || modelsLoading, onClick: refreshModels }, modelsLoading ? '正在读取模型…' : '刷新模型列表')),
               !modelKey && message('请先选择插件正文模型。旧版前台/后台跟随设置需重新选择。'),
@@ -218,7 +245,7 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
               modelError && message(modelError, 'error', 'alert'),
               ...catalog.filter(group => group.error).map(group => h('p', { key: group.provider, className: 'stc-message stc-error', role: 'alert' }, group.providerName + '：' + group.error)),
               h('div', { className: 'stc-card-footer stc-row stc-between' }, h('span', { className: 'stc-muted', role: 'status' }, settingsDirty ? '有未保存的更改' : '设置对所有会话生效'),
-                h('button', { className: 'stc-button', disabled: busy || !config, onClick: () => act(async () => { await saveSettings(); setNotice('设置已保存'); }) }, '保存设置')))),
+                h('button', { className: 'stc-button', disabled: busy || !config || reasoningLoading, onClick: () => act(async () => { await saveSettings(); setNotice('设置已保存'); }) }, '保存设置')))),
             h('section', { className: 'stc-card stc-generation', 'aria-label': '正文重生成' },
               h('div', { className: 'stc-card-title' }, h('h3', null, '正文重生成'),
                 h('span', { className: 'stc-badge' + (failed ? ' stc-badge-error' : !status ? ' stc-badge-neutral' : ''), role: 'status', 'aria-live': 'polite' },

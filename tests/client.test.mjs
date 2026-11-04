@@ -9,7 +9,7 @@ const simplePreset = { prompts: [{ identifier: 'chatHistory', marker: true }],
   prompt_order: [{ character_id: 100001, order: [{ identifier: 'chatHistory', enabled: true }] }] };
 
 // Drive the real client and host entry with a tiny hook scheduler; no DOM or framework dependency.
-function harness({ hostReady = true, initialModel, initialSettings = {}, catalogFailure = false } = {}) {
+function harness({ hostReady = true, initialModel, initialSettings = {}, catalogFailure = false, resolveModelInfo } = {}) {
   const hooks = [], effects = [], pending = new Set(), timers = new Map(), calls = [], downloads = [];
   let cursor = 0, dirty = true, tree, component, properties, panel, action, overlay, registered, saved, status = null, serial = 0;
   const handlers = new Map();
@@ -26,7 +26,11 @@ function harness({ hostReady = true, initialModel, initialSettings = {}, catalog
   });
   apply({ tavern, get: () => undefined, llm: {
     listProviders: () => [{ id: 'own', name: 'Own Provider' }],
-    listModels: async () => { if (modelFailure) throw new Error('offline'); return models; },
+    listModels: async () => { if (modelFailure) throw new Error('offline'); return models.map(({ reasoning, ...summary }) => summary); },
+    resolveModelInfo: resolveModelInfo || (async (provider, model) => {
+      if (provider !== 'own') throw new Error('unknown provider');
+      return models.find(item => item.id === model);
+    }),
   } });
   const React = {
     createElement: (type, props, ...children) => ({ type, props: props || {}, children: children.flat(Infinity).filter(x => x !== null && x !== undefined && x !== false) }),
@@ -92,7 +96,9 @@ function harness({ hostReady = true, initialModel, initialSettings = {}, catalog
     async click(label) { const element = nodes().find(node => node.type === 'button' && contents(node) === label); assert.ok(element, label); assert.ok(!element.props.disabled, label + ' must be enabled'); await element.props.onClick(); await flush(); },
     async poll() { const item = [...timers].find(([, timer]) => timer.delay === 1200); assert.ok(item); timers.delete(item[0]); await item[1].fn(); await flush(); },
     numberInputs: () => nodes().filter(node => node.type === 'input' && node.props.type === 'number').length,
-    async choose(label, value) { const node = nodes().find(node => node.type === 'select' && node.props['aria-label'] === label); assert.ok(node, label); assert.ok(!node.props.disabled); node.props.onChange({ target: { value } }); await flush(); },
+    async choose(label, value, settle = true) { const node = nodes().find(node => node.type === 'select' && node.props['aria-label'] === label); assert.ok(node, label); assert.ok(!node.props.disabled); node.props.onChange({ target: { value } }); if (settle) await flush(); else render(); },
+    flush,
+    selectDisabled: label => nodes().find(node => node.type === 'select' && node.props['aria-label'] === label)?.props.disabled,
     selectValue: label => nodes().find(node => node.type === 'select' && node.props['aria-label'] === label)?.props.value,
     text: () => contents(tree),
     disabled: label => nodes().find(node => node.type === 'button' && contents(node) === label)?.props.disabled,
@@ -112,7 +118,7 @@ test('client imports in chunks, exports exact JSON, saves controls, starts and c
     assert.match(h.text(), /预设已导入/);
     assert.equal(h.disabled('重新生成最新正文'), true);
     await h.choose('插件正文模型', JSON.stringify({ provider: 'own', model: 'story' }));
-    await h.choose('推理强度', 'high');
+    await h.choose('推理等级', 'high');
     assert.equal(h.disabled('重新生成最新正文'), false);
     await h.click('导出原文件');
     assert.equal(await h.downloads[0].blob.text(), source);
@@ -175,7 +181,7 @@ test('legacy selection requires a new choice; catalog failure can be refreshed w
     await h.click('刷新模型列表');
     assert.doesNotMatch(h.text(), /模型列表读取失败/);
     await h.choose('插件正文模型', JSON.stringify({ provider: 'own', model: 'story' }));
-    await h.choose('推理强度', 'high');
+    await h.choose('推理等级', 'high');
     await h.choose('插件正文模型', JSON.stringify({ provider: 'own', model: 'other' }));
     await h.click('保存设置');
     assert.deepEqual(h.saved.settings.model, { provider: 'own', model: 'other' });
@@ -201,11 +207,11 @@ test('preset import keeps unsaved model edits and saving preserves hidden sampli
   try {
     await h.mount();
     await h.choose('插件正文模型', JSON.stringify({ provider: 'own', model: 'story' }));
-    await h.choose('推理强度', 'high');
+    await h.choose('推理等级', 'high');
     await h.choose('请求模式', 'st');
     await h.input(file(JSON.stringify(simplePreset)));
     assert.match(h.text(), /有未保存的更改/);
-    assert.equal(h.selectValue('推理强度'), 'high');
+    assert.equal(h.selectValue('推理等级'), 'high');
     assert.equal(h.selectValue('请求模式'), 'st');
     assert.equal(h.numberInputs(), 0);
     await h.click('重新生成最新正文');
@@ -214,4 +220,83 @@ test('preset import keeps unsaved model edits and saving preserves hidden sampli
     for (const key of Object.keys(sampling)) assert.equal(Object.hasOwn(patch, key), false);
     assert.doesNotMatch(h.text(), /有未保存的更改/);
   } finally { h.destroy(); }
+});
+
+test('reasoning selector stays visible and disabled for models without levels', async () => {
+  const h = harness();
+  try {
+    await h.mount();
+    assert.equal(h.selectValue('推理等级'), '');
+    assert.equal(h.selectDisabled('推理等级'), true);
+    await h.choose('插件正文模型', JSON.stringify({ provider: 'own', model: 'story' }));
+    assert.equal(h.selectDisabled('推理等级'), false);
+    await h.choose('推理等级', 'high');
+    await h.choose('插件正文模型', JSON.stringify({ provider: 'own', model: 'other' }));
+    assert.equal(h.selectValue('推理等级'), '');
+    assert.equal(h.selectDisabled('推理等级'), true);
+    assert.match(h.text(), /该模型未提供可选推理等级，使用模型默认/);
+    await h.click('保存设置');
+    assert.deepEqual(h.saved.settings.model, { provider: 'own', model: 'other' });
+    await h.choose('插件正文模型', JSON.stringify({ provider: 'own', model: 'story' }));
+    assert.equal(h.selectDisabled('推理等级'), false);
+    await h.choose('推理等级', 'high');
+    await h.choose('推理等级', '');
+    await h.click('保存设置');
+    assert.deepEqual(h.saved.settings.model, { provider: 'own', model: 'story' });
+  } finally { h.destroy(); }
+});
+
+test('confirmed models without levels clear an obsolete saved override', async () => {
+  const h = harness({ initialModel: { provider: 'own', model: 'other', reasoningEffort: 'high' } });
+  try {
+    await h.mount();
+    assert.equal(h.selectValue('推理等级'), '');
+    assert.equal(h.selectDisabled('推理等级'), true);
+    assert.match(h.text(), /有未保存的更改/);
+    await h.click('保存设置');
+    assert.deepEqual(h.saved.settings.model, { provider: 'own', model: 'other' });
+  } finally { h.destroy(); }
+});
+
+test('capability failure keeps saved effort, reports an error and can be retried', async () => {
+  let failure = true;
+  const model = { provider: 'own', model: 'story', reasoningEffort: 'high' };
+  const h = harness({ initialModel: model, resolveModelInfo: async () => {
+    if (failure) throw new Error('Authorization: secret');
+    return { id: 'story', reasoning: { efforts: [{ id: 'high' }] } };
+  } });
+  try {
+    await h.mount();
+    assert.equal(h.selectDisabled('推理等级'), true);
+    assert.equal(h.selectValue('推理等级'), 'high');
+    assert.match(h.text(), /推理等级读取失败/);
+    assert.doesNotMatch(h.text(), /该模型未提供|secret/);
+    await h.click('保存设置');
+    assert.deepEqual(h.saved.settings.model, model);
+    failure = false;
+    await h.click('刷新模型列表');
+    assert.equal(h.selectDisabled('推理等级'), false);
+    assert.equal(h.selectValue('推理等级'), 'high');
+    assert.doesNotMatch(h.text(), /推理等级读取失败/);
+  } finally { h.destroy(); }
+});
+
+test('late capability responses cannot enable reasoning for a subsequently selected model', async () => {
+  let finish;
+  const delayed = new Promise(resolve => { finish = resolve; });
+  const h = harness({ resolveModelInfo: async (_provider, model) => model === 'story' ? delayed : { id: model } });
+  try {
+    await h.mount();
+    await h.choose('插件正文模型', JSON.stringify({ provider: 'own', model: 'story' }), false);
+    assert.equal(h.selectDisabled('推理等级'), true);
+    assert.equal(h.disabled('保存设置'), true);
+    await h.choose('插件正文模型', JSON.stringify({ provider: 'own', model: 'other' }), false);
+    finish({ id: 'story', reasoning: { efforts: [{ id: 'high' }] } });
+    await h.flush();
+    assert.equal(h.selectValue('推理等级'), '');
+    assert.equal(h.selectDisabled('推理等级'), true);
+    assert.match(h.text(), /该模型未提供可选推理等级/);
+    await h.click('保存设置');
+    assert.deepEqual(h.saved.settings.model, { provider: 'own', model: 'other' });
+  } finally { finish({ id: 'story' }); h.destroy(); }
 });

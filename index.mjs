@@ -2,7 +2,7 @@ import { createPresetStore } from './lib/store.mjs';
 import { inspectPreset } from './lib/preset.mjs';
 import { runCompiler } from './lib/worker-client.mjs';
 import { createDshGeneration, selectGenerationModel } from './lib/generation.mjs';
-import { listGenerationModels } from './lib/models.mjs';
+import { listGenerationModels, readGenerationModelReasoning } from './lib/models.mjs';
 
 export const name = 'dsh-tavern-STcontext';
 // DSH Cordis expects service names, not the legacy required/optional shape.
@@ -17,6 +17,7 @@ export function apply(ctx) {
   const handle = (key, callback) => ctx.tavern.handle(PREFIX + '/' + key, callback);
   handle('config', async () => ({ ...(await store.list()), hostReady: capable(), generationReady: typeof ctx.tavern.bodyGenerator === 'function' }));
   handle('models', () => listGenerationModels(ctx.llm));
+  handle('model-reasoning', input => readGenerationModelReasoning(ctx.llm, input));
   handle('upload/begin', input => store.begin(input));
   handle('upload/chunk', input => store.chunk(input));
   handle('upload/finish', input => store.finish(input));
