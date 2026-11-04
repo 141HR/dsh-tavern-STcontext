@@ -6,7 +6,7 @@ import { apply } from '../index.mjs';
 
 // Uses production host preparation/commit and the real plugin compiler with a
 // deterministic model response. No imported preset or paid request is needed.
-test('host prepares current turn -> STcontext -> tool receipt -> one processed body and settlement', {
+for (const mode of ['plugin-direct', 'plugin-tool-call']) test(`upstream ${mode}: frozen config -> STcontext -> reusable receipt -> one settlement`, {
   skip: !process.env.STCONTEXT_HOST_REPO,
 }, async () => {
   const host = path => import(pathToFileURL(resolve(process.env.STCONTEXT_HOST_REPO, 'tavern-plugin/lib', path)).href);
@@ -31,12 +31,13 @@ test('host prepares current turn -> STcontext -> tool receipt -> one processed b
   const providers = createBodyGenerationProviders({ allowed: async () => true });
   const generation = createPluginBodyGeneration({ chatForSession: store.chatForSession,
     updateChat: store.updateChat.bind(store), readRevision: async (id, rev) => copy(revisions.get(rev)), providers,
-    settings: async () => ({ storyGenerationMode: 'plugin-tool-call', storyGenerationProvider: 'dsh-tavern-STcontext:st-context' }) });
+    settings: async () => ({ storyGenerationMode: mode, storyGenerationProvider: 'dsh-tavern-STcontext:st-context' }) });
   const turns = createTurnOrchestrator({ store, timeline: createStoryTimeline(), frameBuilder: createForegroundFrameBuilder(),
-    bodyGeneration: () => generation.route('session'), planner: { plan: async () => ({ text: '写作要求' }) }, projectReply: projectReplyLayers });
+    bodyGeneration: () => generation.route('session'), prepareBodyGeneration: () => generation.prepare('session'),
+    planner: { plan: async () => ({ text: '写作要求' }) }, projectReply: projectReplyLayers });
   let pluginData, requests = 0;
   const handlers = new Map();
-  apply({ get: () => undefined, tavern: { handle: (name, callback) => handlers.set(name, callback),
+  apply({ get: () => undefined, tavern: { capabilities: { bodyGeneration: 1 }, handle: (name, callback) => handlers.set(name, callback),
     readPluginData: async () => copy(pluginData), savePluginData: async ({ data }) => { pluginData = copy(data); },
     bodyGenerator: entry => providers.register('dsh-tavern-STcontext', entry) },
     get agents() { assert.fail('plugin generation must be independent of foreground selection'); },
@@ -47,7 +48,8 @@ test('host prepares current turn -> STcontext -> tool receipt -> one processed b
         assert.equal(request.model, 'plugin-story');
         const wire = JSON.stringify(request.messages);
         for (const value of ['完整历史正文', '已解析人物设定', '继续', '起点', 'normal-only']) assert.ok(wire.includes(value), value);
-        assert.doesNotMatch(wire, /regenerate-only|summary/);
+        assert.doesNotMatch(wire, /regenerate-only|summary|不可传入的读取结果/);
+        assert.equal(wire.split('本轮查询补充').length - 1, mode === 'plugin-tool-call' ? 1 : 0);
         yield { type: 'text-delta', index: 0, text: '<div>X</div>' };
         yield { type: 'finish', reason: { kind: 'stop' } };
       } };
@@ -63,10 +65,28 @@ test('host prepares current turn -> STcontext -> tool receipt -> one processed b
   await call('upload/chunk', { id, index: 0, text: preset }); await call('upload/finish', { id });
   await call('settings', { model: { provider: 'independent', model: 'plugin-story' } });
   await turns.prepare({ sessionId: 'session', turn: 2, userText: '继续', requestId: 'r' });
+  // Settings changed after preparation must not change this operation's model.
+  await call('settings', { model: { provider: 'later', model: 'next-turn' } });
   const session = { id: 'session', events: [{ type: 'turn/start', data: { turn: 2 } }] };
+  if (mode === 'plugin-tool-call') {
+    for (const [id, name, text] of [['lookup', 'worldbook_search', '本轮查询补充'], ['read', 'read', '不可传入的读取结果']]) {
+      session.events.push(
+        { type: 'assistant/message', data: { turn: 2, message: { source: { kind: 'model' }, content: [{ type: 'tool-call', id, name, arguments: '{}' }] } } },
+        { type: 'tool/call', data: { turn: 2, callId: id, name, arguments: '{}' } },
+        { type: 'tool/result', data: { turn: 2, message: { role: 'tool', toolCallId: id, content: [{ type: 'text', text }] } } });
+    }
+  }
+  const direct = await generation.direct(session, new AbortController().signal);
+  if (mode === 'plugin-direct') {
+    const chunks = []; for await (const chunk of direct) chunks.push(chunk);
+    assert.equal(chunks[0].block.name, 'tavern_generate_body');
+  } else assert.equal(direct, null);
   let concludes = 0;
   const receipt = await generation.tool.execute({}, { agent: { session }, signal: new AbortController().signal, concludeTurn() { concludes++; } });
   assert.equal(JSON.parse(receipt).text, '<div>XX</div>');
+  const reused = await generation.tool.execute({}, { agent: { session }, signal: new AbortController().signal, concludeTurn() {} });
+  assert.equal(reused, receipt);
+  assert.equal(requests, 1);
   session.events.push({ type: 'assistant/message', data: { turn: 2, step: 1, message: { id: 'model', source: { kind: 'model' }, content: [
     { type: 'tool-call', id: 'body', name: 'tavern_generate_body', arguments: '{}' }] } } },
     { type: 'tool/call', data: { turn: 2, callId: 'body', name: 'tavern_generate_body', arguments: '{}' } },

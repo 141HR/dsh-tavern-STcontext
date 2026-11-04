@@ -57,7 +57,6 @@ test('sidebar, overlay and native settings reach all content in short and narrow
                   if (method === 'config') return config;
                   if (method === 'models') return { groups: [{ provider: 'own', providerName: 'Own', models: [{ id: 'story', name: 'Story' }] }] };
                   if (method === 'model-reasoning') return { efforts: [] };
-                  if (method === 'status') return null;
                   if (method === 'settings') { config.settings = input; return config; }
                   if (method === 'request') return { createdAt: 1, report: config.presets[0].report, total: 2, text: '{}' };
                   throw Error('Unexpected call: ' + method);

@@ -11,19 +11,14 @@ const simplePreset = { prompts: [{ identifier: 'chatHistory', marker: true }],
 // Drive the real client and host entry with a tiny hook scheduler; no DOM or framework dependency.
 function harness({ hostReady = true, initialModel, initialSettings = {}, catalogFailure = false, resolveModelInfo } = {}) {
   const hooks = [], effects = [], pending = new Set(), timers = new Map(), calls = [], downloads = [], disposers = [];
-  let cursor = 0, dirty = true, tree, component, properties, panel, action, overlay, registered, settingsSection, settingsSpec, saved, status = null, serial = 0;
+  let cursor = 0, dirty = true, tree, component, properties, panel, action, overlay, registered, settingsSection, settingsSpec, saved, serial = 0;
   const handlers = new Map();
   saved = { schemaVersion: 1, presets: [], activeId: null, settings: { ...initialSettings, ...(initialModel === undefined ? {} : { model: initialModel }) } };
   let modelFailure = catalogFailure;
   const models = [{ id: 'story', name: 'Story', reasoning: { efforts: [{ id: 'high', name: 'High' }] } }, { id: 'other', name: 'Other' }];
   const tavern = { readPluginData: async () => structuredClone(saved), savePluginData: async ({ data }) => { saved = structuredClone(data); },
     handle: (key, fn) => handlers.set(key, fn), onGameRemoved() {} };
-  if (hostReady) Object.assign(tavern, {
-    bodyRegenerator() {},
-    startBodyRegeneration: async input => (status = { id: 'job', gameId: input.gameId, status: 'running', phase: 'generating' }),
-    bodyRegenerationStatus: async () => structuredClone(status),
-    cancelBodyRegeneration: async () => (status = { ...status, status: 'cancelled' }),
-  });
+  if (hostReady) Object.assign(tavern, { capabilities: { bodyGeneration: 1 }, bodyGenerator() {} });
   apply({ tavern, get: () => undefined, llm: {
     listProviders: () => [{ id: 'own', name: 'Own Provider' }],
     listModels: async () => { if (modelFailure) throw new Error('offline'); return models.map(({ reasoning, ...summary }) => summary); },
@@ -94,7 +89,7 @@ function harness({ hostReady = true, initialModel, initialSettings = {}, catalog
   }
   const contents = node => typeof node === 'string' || typeof node === 'number' ? String(node) : (node?.children || []).map(contents).join('');
   return {
-    calls, downloads, get status() { return status; }, set status(value) { status = value; },
+    calls, downloads,
     get settingsSpec() { return settingsSpec; },
     get saved() { return structuredClone(saved); }, set modelFailure(value) { modelFailure = value; },
     async mount(useAction = false) {
@@ -106,7 +101,6 @@ function harness({ hostReady = true, initialModel, initialSettings = {}, catalog
     },
     async input(file) { const target = { files: [file], value: 'selected.json' }; nodes().find(node => node.type === 'input' && node.props.type === 'file').props.onChange({ target }); assert.equal(target.value, ''); await flush(); },
     async click(label) { const element = nodes().find(node => node.type === 'button' && contents(node) === label); assert.ok(element, label); assert.ok(!element.props.disabled, label + ' must be enabled'); await element.props.onClick(); await flush(); },
-    async poll() { const item = [...timers].find(([, timer]) => timer.delay === 1200); assert.ok(item); timers.delete(item[0]); await item[1].fn(); await flush(); },
     numberInputs: () => nodes().filter(node => node.type === 'input' && node.props.type === 'number').length,
     async choose(label, value, settle = true) { const node = nodes().find(node => node.type === 'select' && node.props['aria-label'] === label); assert.ok(node, label); assert.ok(!node.props.disabled); node.props.onChange({ target: { value } }); if (settle) await flush(); else render(); },
     flush,
@@ -140,63 +134,51 @@ test('native settings configures presets and models without a game and unregiste
   assert.equal(h.settingsSpec, null);
 });
 
-test('client imports in chunks, exports exact JSON, saves controls, starts and cancels', async () => {
+test('client imports, exports, saves controls and directs generation to upstream host', async () => {
   const h = harness();
   try {
     await h.mount(true);
-    assert.equal(h.disabled('重新生成最新正文'), true);
+    assert.equal(h.disabled('重新生成最新正文'), undefined);
     const source = JSON.stringify(simplePreset) + ' '.repeat(110000);
     await h.input(file(source));
     assert.equal(h.calls.filter(call => call.name === 'upload/chunk').length, 3);
     assert.match(h.text(), /预设已导入/);
-    assert.equal(h.disabled('重新生成最新正文'), true);
+    assert.equal(h.disabled('重新生成最新正文'), undefined);
     await h.choose('插件正文模型', JSON.stringify({ provider: 'own', model: 'story' }));
     await h.choose('推理等级', 'high');
-    assert.equal(h.disabled('重新生成最新正文'), false);
+    assert.equal(h.disabled('重新生成最新正文'), undefined);
     await h.click('导出原文件');
     assert.equal(await h.downloads[0].blob.text(), source);
     assert.equal(h.numberInputs(), 0);
     assert.doesNotMatch(h.text(), /输出\s*token\s*上限|上下文预算|温度/);
     await h.click('保存设置');
     assert.deepEqual(h.saved.settings.model, { provider: 'own', model: 'story', reasoningEffort: 'high' });
-    await h.click('重新生成最新正文');
-    assert.equal(h.calls.filter(call => call.name === 'start').at(-1).input.gameId, 'game');
-    assert.match(h.text(), /独立生成中/);
-    assert.equal(h.disabled('导入 JSON'), true);
-    assert.equal(h.disabled('取消生成'), false);
-    await h.click('取消生成');
-    assert.match(h.text(), /已取消/);
-    assert.equal(h.calls.filter(call => call.name === 'cancel').at(-1).input.id, 'job');
-    assert.equal(h.disabled('重新生成最新正文'), false);
-    assert.equal(h.disabled('取消生成'), true);
+    assert.match(h.text(), /插件直接生成/);
+    assert.match(h.text(), /前台检索后由插件生成/);
+    assert.match(h.text(), /使用宿主的发送、重生成、失败重试和停止按钮/);
+    assert.equal(h.disabled('取消生成'), undefined);
+    assert.equal(h.calls.some(call => ['start', 'status', 'cancel'].includes(call.name)), false);
     await h.click('移除');
-    assert.equal(h.disabled('重新生成最新正文'), true);
+    assert.equal(h.disabled('重新生成最新正文'), undefined);
   } finally { h.destroy(); }
 });
 
-test('client displays structured errors and committed settlement failure without losing status', async () => {
+test('request preview reports an absent request without polling fork task APIs', async () => {
   const h = harness({ initialModel: { provider: 'own', model: 'story' } });
   try {
     await h.mount(); await h.input(file(JSON.stringify(simplePreset)));
-    h.status = { id: 'job', status: 'failed', phase: 'generating', error: { code: 'REJECTED', message: '模型拒绝这次请求' } };
-    await h.poll(); assert.match(h.text(), /模型拒绝这次请求/);
-    h.status = { id: 'job', status: 'running', phase: 'settling', committed: true, cancellable: false };
-    await h.poll(); assert.equal(h.disabled('取消生成'), true);
-    h.status = { id: 'job', status: 'completed', phase: 'completed', result: { settlementStatus: 'failed', warning: '后台模型暂不可用' } };
-    await h.poll();
-    assert.match(h.text(), /后台模型暂不可用/); assert.match(h.text(), /新正文已保留/);
-    assert.equal(h.disabled('重新生成最新正文'), false);
     await h.click('查看本次请求'); assert.match(h.text(), /还没有已编译请求/);
+    assert.equal(h.calls.some(call => ['start', 'status', 'cancel'].includes(call.name)), false);
   } finally { h.destroy(); }
 });
 
 test('client reports invalid imports and keeps unsupported hosts unable to generate', async () => {
   const h = harness({ hostReady: false });
   try {
-    await h.mount(); assert.match(h.text(), /宿主尚未提供重生成接口/);
+    await h.mount(); assert.match(h.text(), /宿主尚未提供插件正文生成接口/);
     await h.input(file('{ broken')); assert.match(h.text(), /JSON/);
     await h.input(file(JSON.stringify(simplePreset))); assert.match(h.text(), /预设已导入/);
-    assert.equal(h.disabled('重新生成最新正文'), true);
+    assert.equal(h.disabled('重新生成最新正文'), undefined);
     assert.equal(h.calls.some(call => call.name === 'status'), false);
   } finally { h.destroy(); }
 });
@@ -208,7 +190,7 @@ test('legacy selection requires a new choice; catalog failure can be refreshed w
     assert.match(h.text(), /旧版前台\/后台跟随设置需重新选择/);
     assert.match(h.text(), /模型列表读取失败/);
     assert.equal(h.selectValue('插件正文模型'), '');
-    assert.equal(h.disabled('重新生成最新正文'), true);
+    assert.equal(h.disabled('重新生成最新正文'), undefined);
     await h.choose('请求模式', 'st');
     h.modelFailure = false;
     await h.click('刷新模型列表');
@@ -247,7 +229,7 @@ test('preset import keeps unsaved model edits and saving preserves hidden sampli
     assert.equal(h.selectValue('推理等级'), 'high');
     assert.equal(h.selectValue('请求模式'), 'st');
     assert.equal(h.numberInputs(), 0);
-    await h.click('重新生成最新正文');
+    await h.click('保存设置');
     assert.deepEqual(h.saved.settings, { ...sampling, adapter: 'st', model: { provider: 'own', model: 'story', reasoningEffort: 'high' } });
     const patch = h.calls.filter(call => call.name === 'settings').at(-1).input;
     for (const key of Object.keys(sampling)) assert.equal(Object.hasOwn(patch, key), false);

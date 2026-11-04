@@ -7,8 +7,6 @@ window.__ModuleLoader__.load({
       inject: ['tavernUi', 'slots'],
       apply(ctx) {
         const ui = ctx.tavernUi, call = (name, args = {}) => ui.callHost('dsh-tavern-stcontext/' + name, args);
-        const labels = { queued: '排队中', preparing: '准备起点快照', snapshot: '读取完整可见材料', generating: '独立生成中', validating: '校验正文', committing: '替换正文', committed: '正文已提交', syncing: '同步主会话', settling: '重新结算', completed: '已完成', succeeded: '已完成', failed: '失败', cancelled: '已取消', canceled: '已取消', aborted: '已取消', running: '进行中' };
-        const ended = value => !value || ['completed', 'succeeded', 'failed', 'cancelled', 'canceled', 'aborted'].includes(value.status);
         const editableSettings = value => ({ adapter: value?.adapter || 'auto', model: value?.model || null });
         const css = `
 .stc-scroll{box-sizing:border-box;flex:1 1 auto;width:100%;height:100%;min-width:0;min-height:0;overflow:auto;overscroll-behavior:contain}
@@ -83,16 +81,14 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
           setTimeout(() => URL.revokeObjectURL(url), 1000);
         }
         function Panel({ gameId, close, settingsPage = false }) {
-          const [config, setConfig] = React.useState(null), [status, setStatus] = React.useState(null);
+          const [config, setConfig] = React.useState(null);
           const [error, setError] = React.useState(''), [notice, setNotice] = React.useState(''), [working, setWorking] = React.useState(false);
           const [settings, setSettings] = React.useState({}), [report, setReport] = React.useState(null);
           const [catalog, setCatalog] = React.useState([]), [modelsLoading, setModelsLoading] = React.useState(false), [modelError, setModelError] = React.useState('');
           const [reasoning, setReasoning] = React.useState({ key: '', efforts: [], loading: false, error: '' });
           const [request, setRequest] = React.useState(''), [requestShown, setRequestShown] = React.useState(false);
           const file = React.useRef(null), alive = React.useRef(true);
-          const busy = working || !ended(status);
-          const phase = status && ['failed', 'cancelled', 'canceled', 'aborted'].includes(status.status) ? status.status : status?.phase || status?.status;
-          const canCancel = !ended(status) && status?.cancellable !== false && !status?.committed && !['committed', 'settling'].includes(status?.phase);
+          const busy = working;
           async function refresh(resetSettings = true) {
             const value = await call('config');
             if (alive.current) { setConfig(value); if (resetSettings) setSettings(editableSettings(value.settings)); }
@@ -115,16 +111,6 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
             refreshModels();
             return () => { alive.current = false; };
           }, []);
-          React.useEffect(() => {
-            let stopped = false, timer;
-            async function poll() {
-              try { const value = await call('status', { gameId }); if (!stopped) setStatus(value); }
-              catch (err) { if (!stopped && config?.hostReady) setError(err.message || String(err)); }
-              if (!stopped) timer = setTimeout(poll, 1200);
-            }
-            if (gameId && config?.hostReady) poll();
-            return () => { stopped = true; clearTimeout(timer); };
-          }, [gameId, config?.hostReady]);
           async function act(work) {
             setWorking(true); setError(''); setNotice('');
             try { await work(); } catch (err) { if (alive.current) setError(err.message || String(err)); }
@@ -187,7 +173,6 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
           const reasoningError = reasoning.key === modelKey ? reasoning.error : '';
           const settingsDirty = config && JSON.stringify(editableSettings(settings)) !== JSON.stringify(editableSettings(config.settings));
           const ready = !!(config?.hostReady && selected && modelKey && !reasoningLoading);
-          const failed = status?.status === 'failed';
           const message = (text, kind = 'notice', role = 'status') => h('p', { className: 'stc-message stc-' + kind, role }, text);
           const badge = (text, tone = '') => h('span', { className: 'stc-badge' + (tone ? ' stc-badge-' + tone : '') }, text);
           // Sidebar tabs and overlays have a bounded host area; settings already owns its scroll area.
@@ -200,7 +185,7 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
               h('div', { className: 'stc-row' }, h('span', { className: 'stc-header-status' }, badge(!config ? '加载中' : ready ? '配置就绪' : '待配置', ready ? '' : 'neutral')),
                 close && h('button', { className: 'stc-button stc-quiet', onClick: close }, '关闭'))),
             h('div', { className: 'stc-feedback' }, error && message(error, 'error', 'alert'), notice && message(notice),
-              config?.hostReady === false && message('宿主尚未提供重生成接口，请更新 DSH Tavern。预设仍可导入保存。', 'error', 'alert')),
+              config?.hostReady === false && message('宿主尚未提供插件正文生成接口，请更新上游 DSH Tavern。预设仍可导入保存。', 'error', 'alert')),
             h('div', { className: 'stc-grid' },
             h('section', { className: 'stc-card stc-config-card', 'aria-label': '预设管理' },
               h('div', { className: 'stc-card-title' }, h('div', null, h('h3', null, '预设'), h('p', { className: 'stc-muted' }, '管理叙事规则与上下文组织方式')),
@@ -249,26 +234,14 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
               ...catalog.filter(group => group.error).map(group => h('p', { key: group.provider, className: 'stc-message stc-error', role: 'alert' }, group.providerName + '：' + group.error)),
               h('div', { className: 'stc-card-footer stc-row stc-between' }, h('span', { className: 'stc-muted', role: 'status' }, settingsDirty ? '有未保存的更改' : '设置对所有会话生效'),
                 h('button', { className: 'stc-button', disabled: busy || !config || reasoningLoading, onClick: () => act(async () => { await saveSettings(); setNotice('设置已保存'); }) }, '保存设置')))),
-            gameId ? h('section', { className: 'stc-card stc-generation', 'aria-label': '正文重生成' },
-              h('div', { className: 'stc-card-title' }, h('h3', null, '正文重生成'),
-                h('span', { className: 'stc-badge' + (failed ? ' stc-badge-error' : !status ? ' stc-badge-neutral' : ''), role: 'status', 'aria-live': 'polite' },
-                  h('span', { className: 'stc-dot', 'aria-hidden': true }), status ? (labels[phase] || phase) : '尚未开始')),
-              h('p', { className: 'stc-muted' }, !config ? '正在读取配置…' : !selected ? '先导入并选择预设，再生成最新正文。' : !modelKey ? '选择插件正文模型后即可开始。' : '使用所选预设与完整可见历史，替换最新一轮正文。'),
-              status?.result?.warning && message(status.result.warning),
-              status?.result?.settlementStatus === 'failed' && message('新正文已保留，后台结算失败。请在宿主中重试结算。'),
-              status?.error && message(typeof status.error === 'string' ? status.error : status.error.message, 'error', 'alert'),
-              h('div', { className: 'stc-actions' }, h('div', { className: 'stc-row' },
-                h('button', { className: 'stc-button stc-primary', disabled: busy || !ready, onClick: () => act(async () => { await saveSettings(); setReport(null); const value = await call('start', { gameId }); setStatus(value); }) }, '重新生成最新正文'),
-                h('button', { className: 'stc-button', disabled: !canCancel || working, onClick: () => act(async () => { const value = await call('cancel', { gameId, id: status.id }); setStatus(value); }) }, '取消生成')),
-                h('button', { className: 'stc-button stc-quiet', disabled: working, onClick: () => act(readRequest) }, '查看本次请求')),
-              h('details', { className: 'stc-details' }, h('summary', null, '生成说明'),
-                h('div', { className: 'stc-details-body' },
-                  h('p', { className: 'stc-muted' }, '开始重生成时会自动保存当前设置。生成阶段可取消；正文提交后继续完成同步与结算。'),
-                  config?.generationReady && h('p', { className: 'stc-muted' }, '自动生成新正文：在「设置 → DSH Tavern → 剧情」选择 STcontext，再将正文生成方式设为「通过 Tool Call 调用插件」。'))))
-              : h('section', { className: 'stc-card stc-generation', 'aria-label': '使用说明' },
-                h('h3', null, '开始使用'),
-                h('p', { className: 'stc-muted' }, '预设与模型设置对所有会话生效。重生成正文或查看本次请求，请打开游戏后使用侧栏「＋ → STcontext」或输入框上方的「STcontext 重生成」。'),
-                config?.generationReady && h('p', { className: 'stc-muted' }, '自动生成新正文：在「设置 → DSH Tavern → 剧情」选择 STcontext，再将正文生成方式设为「通过 Tool Call 调用插件」。')),
+            h('section', { className: 'stc-card stc-generation', 'aria-label': '使用说明' },
+              h('h3', null, '正文生成'),
+              h('p', { className: 'stc-muted' }, '先保存预设与模型设置，再在「设置 → DSH Tavern → 剧情」选择 STcontext 和「插件直接生成」。如需前台模型先查世界书，选择「前台检索后由插件生成」。本局设置可覆盖全局选择。'),
+              h('p', { className: 'stc-muted' }, '使用宿主的发送、重生成、失败重试和停止按钮。生成进度及错误由宿主显示；提交后结算失败时，在宿主中重试结算。'),
+              h('p', { className: 'stc-muted' }, '预设与模型在操作开始时冻结；生成途中保存更改只影响下一次操作。'),
+              gameId ? h('div', { className: 'stc-actions' },
+                h('button', { className: 'stc-button stc-quiet', disabled: working, onClick: () => act(readRequest) }, '查看本次请求'))
+                : h('p', { className: 'stc-muted' }, '打开游戏后，通过侧栏「＋ → STcontext」或输入框上方的「STcontext」查看本次请求。')),
             activeReport && h('details', { className: 'stc-card stc-report', key: (selected?.id || '') + (activeReport.blockers?.length ? '-blocked' : ''), open: activeReport.blockers?.length ? true : undefined },
               h('summary', null, '兼容报告', badge(activeReport.blockers?.length ? activeReport.blockers.length + ' 项待处理' : activeReport.warnings?.length ? activeReport.warnings.length + ' 项提示' : '检查通过', activeReport.blockers?.length ? 'error' : 'neutral')),
               h('div', { className: 'stc-details-body' },
@@ -287,7 +260,7 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
         }, () => h(Panel, { settingsPage: true }))), 'STcontext: settings section');
         ui.registerPanel({ id: 'st-context', title: 'STcontext', render: ({ gameId }) => h(Panel, { gameId }) });
         ui.registerComposerAction({
-          id: 'regenerate', label: 'STcontext 重生成',
+          id: 'regenerate', label: 'STcontext',
           run: async ({ gameId }) => {
             ui.openOverlay({ gameId, render: ({ close }) => h(Panel, { gameId, close }) });
           },

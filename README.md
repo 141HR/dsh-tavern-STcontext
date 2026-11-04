@@ -4,11 +4,18 @@
 
 ## 安装与使用
 
-需要新版 DSH Tavern 的插件 API 7（`bodyRegeneration: 1`）：提供 `bodyRegenerator`、`startBodyRegeneration`、`bodyRegenerationStatus`、`cancelBodyRegeneration` 接口。仅修改宿主工作区代码不会更新已安装的 Profile；开发阶段须先将相应宿主版本部署到所用 Profile 并重启。旧宿主可以保存预设，但不能启动重生成。
+从 0.4.0 起面向 [flizzywine/dsh-tavern 上游](https://github.com/flizzywine/dsh-tavern)，需要包含正文生成扩展点的版本（首次实现于 `09620ebe`）。上游插件 API 为 7，插件检查 `capabilities.bodyGeneration === 1` 并统一注册 `bodyGenerator({ prepare, generate })`；不使用旧 fork 的 API 8 或独立重生成任务接口。仅修改宿主工作区代码不会更新已安装的 Profile，须先更新实际使用的宿主并重启。
 
-自动生成新正文需要插件 API 8（`bodyGeneration: 1`）的 `bodyGenerator` 接口。在插件面板导入预设并保存设置后，打开「设置 → DSH Tavern → 剧情」，先选择正文生成插件 STcontext，再选择「通过 Tool Call 调用插件」。之后正常发送消息即可：前台模型调用宿主的 `tavern_generate_body`，插件独立生成正文，宿主直接采用并结算，不再让前台模型转述。通常需要一次前台调度请求和一次插件正文请求。宿主的正文重生成、失败轮重试也使用选定插件。
+在 STcontext 面板导入预设、选择正文模型并保存后，打开「设置 → DSH Tavern → 剧情」，先选择正文生成插件 STcontext，再选择：
 
-插件模式的正文一次性显示；宿主停止按钮会取消生成。插件不可用、生成失败或完整上下文超限时明确报错，不回退到宿主生成。正文提交后的结算仍由宿主完成。材料和所选生成器按轮冻结，生成中切换宿主设置只影响下一轮。
+- **插件直接生成**：宿主准备材料后直接调用插件，不额外请求前台模型。
+- **前台检索后由插件生成**：前台模型先查询世界书，再由插件生成正文，会产生额外的前台模型请求。
+
+本局设置可以覆盖全局选择。正常发送、最新正文重生成和失败输入重试均使用宿主原有按钮，停止也由宿主控制。插件面板不再提供独立的开始、取消和任务状态轮询，保留预设设置、模型选择和请求预览。
+
+插件正文一次性显示。插件不可用、生成失败或完整上下文超限时明确报错，不回退到宿主生成。正文提交后的结算仍由宿主完成。宿主在操作开始时通过 `prepare` 冻结预设、模型及采样配置，正常轮次在前台检索之前冻结；生成期间切换或移除预设、修改模型只影响后续操作。已有预设及独立模型设置无需转换，保留插件数据即可。
+
+旧存档缺少可靠材料快照时由宿主明确拒绝生成，建议先用更新后的新会话验证。配置快照按宿主要求最多 2 MiB，两种回调均受宿主 10 分钟超时及取消信号约束。
 
 当前自动生成接口只支持文本输入；本轮带附件时会明确报错，不会忽略附件继续生成。
 
@@ -18,7 +25,7 @@
 
 插件没有额外第三方依赖，不需要 `npm install` 或构建，也不需要安装 SillyTavern。
 
-本地目录安装：在 PowerShell 中进入本插件目录，执行以下命令，将运行文件复制到 Tavern 用户插件目录。设置过 `DSH_HOME` 时应使用实际启动 Tavern 的同一个值；默认数据目录为 `%USERPROFILE%\.dsh\profile-data\tavern\data`。
+本地目录安装：在 PowerShell 中进入本插件目录，执行以下命令，将运行文件复制到 Tavern 用户插件目录。设置过 `DSH_HOME` 时应使用实际启动 Tavern 的同一个值；以下命令以 Desktop 默认目录 `%USERPROFILE%\.dsh` 为例；CLI 默认使用 `%USERPROFILE%\.dsh-tavern`，使用 CLI 时应将根目录改成该路径。
 
 ```powershell
 $stcontextDshRoot = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE '.dsh' }
@@ -34,26 +41,26 @@ Copy-Item -LiteralPath '.\lib' -Destination $stcontextTarget -Recurse -Force
 
 也可将 `package.json`、`index.mjs`、`client.js`、`lib/` 放在 ZIP 根目录，通过上述插件管理页面上传安装。
 
-在 DeepSeek Harness「设置 → STcontext」可直接导入预设、选择模型并保存，无需先打开游戏。需要重生成正文或查看本次请求时，在游戏中通过侧栏「＋ → STcontext」或输入框上方的「STcontext 重生成」打开面板：
+在 DeepSeek Harness「设置 → STcontext」可直接导入预设、选择模型并保存，无需先打开游戏。需要调整生成设置或查看本次请求时，在游戏中通过侧栏「＋ → STcontext」或输入框上方的「STcontext」打开面板：
 
 1. 导入预设 JSON，查看兼容报告；预设不会编译进源码。
 2. 选择预设和「插件正文模型」，按需设置「推理等级」，点击「保存设置」；请求模式位于「预设适配」中。等级按所选模型的详细能力加载；没有可选等级时显示「模型默认」并禁用选择，不发送额外的推理等级参数。切换模型会清除旧模型的等级设置，读取失败时可通过「刷新模型列表」重试。
-3. 点击「重新生成最新正文」。生成阶段可取消；正文提交后继续完成主会话同步和结算，此时不再取消。
+3. 保存设置并在宿主剧情设置中选定 STcontext 后，使用宿主的发送、重生成、失败重试和停止按钮。正文提交后继续完成主会话同步和结算，此时停止不会撤销正文。
 4. 可查看或下载本次实际请求。新正文提交后结算失败时，通过宿主重试结算；不会撤掉已提交正文。
 
-面板按预设、正文模型和生成操作分区，窄屏自动纵向排列。侧栏和弹窗在可用高度内上下滚动，设置页沿用宿主的滚动区域。兼容报告和生成说明默认收起，阻止生成的问题会自动展开显示。输出 token 上限、上下文预算和温度不再提供界面控件；已有参数配置继续保留，未配置的参数仍沿用预设或模型默认值。
+面板按预设、正文模型和使用说明分区，窄屏自动纵向排列。侧栏和弹窗在可用高度内上下滚动，设置页沿用宿主的滚动区域。兼容报告默认收起，阻止生成的问题会自动展开显示。输出 token 上限、上下文预算和温度不再提供界面控件；已有参数配置继续保留，未配置的参数仍沿用预设或模型默认值。
 
 预设以压缩形式保存在当前宿主的插件数据中，更新插件不会覆盖。支持导出原文件、切换和移除。文件最多 2 MB，全部预设压缩后的存储合计受宿主 256 KB 上限约束。导入中的分块不持久化。
 
 ## 兼容范围
 
-- ST 聊天补全的 100001 顺序、启用项、角色、材料 marker 和深度提示词。新正文使用 `normal`，重生成使用 `regenerate`；非空 `injection_trigger` 必须包含当前类型才生效。
+- ST 聊天补全的 100001 顺序、启用项、角色、材料 marker 和深度提示词。上游 `reason=normal` 使用 `normal`，`regenerate/retry` 使用 `regenerate`；非空 `injection_trigger` 必须包含当前类型才生效。
 - 局部 setvar/getvar、基本变量操作、user/char、注释、random/roll；未知宏明确报错。
 - 原生 `extensions.regex_scripts`；SPreset RegexBinding 只保留原数据，不重复执行。
 - 识别昆仑 IDE 1.2r 已适配的请求改写脚本，将其模板作为数据解析。没有全局 fetch 钩子，也不执行导入的 JavaScript。修改脚本版本后须重新适配；标准 ST 模式可以明确忽略脚本行为。
 - 工具描述承载上下文、buffer_content 结果解析由私有适配器完成。模板和正文规范来自用户导入的 JSON，仓库不附带预设。
 
-宿主只导出可见历史。历史正文不重复运行输出正则；输入只应用保留原文的包装规则，所以原预设的删楼、摘要规则不会删掉历史。世界书沿用原轮激活结果，不重新扫描。人物优先使用宿主已解析的快照，避免再次运行副作用宏或 EJS。
+宿主只导出可见历史。历史正文不重复运行输出正则；输入只应用保留原文的包装规则，所以原预设的删楼、摘要规则不会删掉历史。世界书沿用原轮激活结果，不重新扫描。人物与玩家设定使用宿主已解析的 `context` 段，身份宏使用 `identities`，变量和状态栏使用输入预处理后、正文生成前的 `state`。世界书段已包含本轮有效查询结果，不重复追加；历史和人物材料不再次运行宏或 EJS。旧人物快照可能合并多个字段，不保证还原 ST 原卡的逐项占位结构。
 
 输出处理采用一次有序正则管道：只选择已启用、placement=2、depth=0 适用的规则，合并提示词/显示范围，每条规则最多执行一次。包含 HTML 的结果原样交宿主，不再另行提取 content 标签。正则在有超时的 Worker 中执行，失败不会替换正文。
 
@@ -67,9 +74,9 @@ Copy-Item -LiteralPath '.\lib' -Destination $stcontextTarget -Recurse -Force
 
 设置 `STCONTEXT_HOST_REPO` 后，`tests/client-browser.test.mjs` 使用宿主的 Playwright 与 React 开发依赖检查侧栏、弹窗和设置页在窄屏、低高度窗口中的滚动和保存。可通过 `STCONTEXT_BROWSER_EXECUTABLE` 指定本机 Chromium 或 Edge 路径。
 
-跨仓库联调额外设置 `STCONTEXT_HOST_REPO` 为新版 Tavern 工作区路径，并用该宿主的 `bin/test-tavern.mjs` 运行本插件的 `tests/host-smoke.test.mjs`。测试通过实际宿主材料导出、任务服务、插件直接调用 DSH 和正文替换流程，模型回包使用测试桩，存档只在内存中。插件的 `generation.test.mjs` 在设置 `DSH_BOOT_MODULE` 时还会验证真实 DSH LLM 服务。需要可用的 DSH Session 测试运行时；可显式指定 `DSH_BOOT_MODULE`。
+跨仓库联调额外设置 `STCONTEXT_HOST_REPO` 为新版上游 Tavern 工作区路径，并用该宿主的 `bin/test-tavern.mjs` 运行本插件的 `tests/host-smoke.test.mjs`。测试覆盖实际宿主材料导出、统一生成器、正文替换及失败输入补全、原生会话同步和起点结算，模型回包使用测试桩，存档只在内存中。默认使用最小测试预设；可额外设置 `STCONTEXT_PRESET_FIXTURE` 验证已有的昆仑适配预设。插件的 `generation.test.mjs` 在设置 `DSH_BOOT_MODULE` 时还会验证真实 DSH LLM 服务。需要可用的 DSH Session 测试运行时；可显式指定 `DSH_BOOT_MODULE`。
 
-设置 `STCONTEXT_HOST_REPO` 后，`tests/host-generation.test.mjs` 还会验证新正文从宿主准备、STcontext 编译、工具返回到保存和一次结算的完整链路；此测试使用最小测试预设，不需要用户预设文件。
+设置 `STCONTEXT_HOST_REPO` 后，`tests/host-generation.test.mjs` 还会验证新正文从宿主准备、STcontext 编译、工具返回到保存和一次结算的完整链路；此测试使用最小测试预设，不需要用户预设文件，并覆盖直接生成、前台检索后生成、冻结配置及回执复用。
 
 同时设置 `DSH_BOOT_MODULE` 和 `STCONTEXT_HOST_REPO` 后，`tests/host-loading.test.mjs` 会通过真实 Cordis 和 Tavern 保护入口验证插件加载、预设导入、卸载与重新加载，并覆盖有、无可选 `tokenMeter` 服务的环境。
 

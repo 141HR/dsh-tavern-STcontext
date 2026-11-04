@@ -4,14 +4,16 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { apply } from '../index.mjs';
+import { preset } from './fixtures/materials.mjs';
 
-// Opt-in contract smoke against a host checkout and a user-owned preset. Neither is bundled.
-const enabled = process.env.STCONTEXT_HOST_REPO && process.env.STCONTEXT_PRESET_FIXTURE;
-test('real Kunlun import -> host materials/plugin DSH request -> replacement/native sync/start-state settlement', { skip: !enabled, timeout: 20000 }, async () => {
+// Real upstream regeneration transaction and native DSH Session, with optional user preset.
+const enabled = process.env.STCONTEXT_HOST_REPO && process.env.DSH_BOOT_MODULE;
+const kunlun = !!process.env.STCONTEXT_PRESET_FIXTURE;
+for (const failed of [false, true]) test(`upstream ${failed ? 'failed-input retry' : 'regeneration'} -> frozen preset -> native sync/settlement`, { skip: !enabled, timeout: 20000 }, async () => {
   const host = async path => import(pathToFileURL(resolve(process.env.STCONTEXT_HOST_REPO, path)).href);
-  const [{ createBodyRegenerationJobs }, { createRoundHistory }, { createStoryTimeline },
+  const [{ createBodyGenerationProviders }, { createPluginBodyGeneration }, { createRoundHistory }, { createStoryTimeline },
     { captureBodyRegenerationSource, buildBodyRegenerationMaterials }, { Session }, { appendSessionEvent }] = await Promise.all([
-    host('tavern-plugin/lib/domain/body-regeneration-jobs.js'),
+    host('tavern-plugin/lib/domain/body-generation-providers.js'), host('tavern-plugin/lib/domain/plugin-body-generation.js'),
     host('tavern-plugin/lib/domain/round-history.js'), host('tavern-plugin/lib/domain/story-timeline.js'),
     host('tavern-plugin/lib/domain/body-regeneration-materials.js'), host('tests/fixtures/dsh-session-host.mjs'),
     host('tavern-plugin/lib/domain/session-events.js'),
@@ -50,14 +52,22 @@ test('real Kunlun import -> host materials/plugin DSH request -> replacement/nat
         { role: 'assistant', turn: 3, sourceText: '应被替换的旧正文', text: '应被替换的旧正文', variables: [{ hp: 9 }] });
       chat.posture = '旧正文后 HP 9'; chat.macroState = { local: { inputCount: 2, oldOutput: 1 } }; chat.settleStatus = 'done';
     } });
-  await chats.write(completed.chat);
+  await chats.write(failed ? begun.chat : completed.chat);
   const session = Session.create('session');
   let messageId = 0;
-  for (const row of [...initialMessages, { role: 'user', text: '本轮原有输入' }, { role: 'assistant', turn: 3, text: '应被替换的旧正文' }]) {
+  for (const row of [...initialMessages, ...(failed ? [] : [{ role: 'user', text: '本轮原有输入' }, { role: 'assistant', turn: 3, text: '应被替换的旧正文' }])]) {
     if (row.tavernHidden) continue;
     const message = { id: 'm' + ++messageId, role: row.role, source: row.role === 'user' ? { kind: 'user' } : { kind: 'model', provider: 'fixture', model: 'fixture' }, content: [{ type: 'text', text: row.text }] };
     if (row.role === 'user') appendSessionEvent(session, 'user/message', message, { surfaceOp: 'append' });
     else appendSessionEvent(session, 'assistant/message', { turn: row.turn, step: 1, message }, { surfaceOp: 'append', sourceEventSeqs: [] });
+  }
+  if (failed) {
+    appendSessionEvent(session, 'turn/start', { turn: 3 });
+    appendSessionEvent(session, 'step/start', { turn: 3, step: 1 });
+    appendSessionEvent(session, 'user/message', { id: 'failed-input', role: 'user', source: { kind: 'user' },
+      content: [{ type: 'text', text: '本轮原有输入' }] }, { surfaceOp: 'append' });
+    appendSessionEvent(session, 'step/end', { turn: 3, step: 1 });
+    appendSessionEvent(session, 'turn/end', { turn: 3, reason: { kind: 'error', message: '模型拒绝' } });
   }
   const agent = { session, phase: { kind: 'idle', lastTurn: 3 }, followup() { throw new Error('Foreground agent must not run'); } };
   const settlements = [], notifications = [], projections = [], phases = [];
@@ -80,49 +90,48 @@ test('real Kunlun import -> host materials/plugin DSH request -> replacement/nat
       return { config: controls, stream: async function* (options) {
         modelCalls++;
         assert.equal(options.provider, 'independent'); assert.equal(options.model, 'plugin-story');
-        assert.equal(options.system, ''); assert.equal(options.tools.length, 1);
+        assert.equal(options.system, ''); assert.equal(options.tools.length, kunlun ? 1 : 0);
         const wire = JSON.stringify(options);
         for (const text of ['完整可见开场白', '前轮可见玩家输入', '前轮完整可见正文', '本轮原有输入', '已展开人物设定', '本轮选取世界书', '本轮写作要求', '本轮起点 HP 10']) assert.ok(wire.includes(text), text);
         assert.doesNotMatch(wire, /NEVER_SEND_HIDDEN_HELPER|应被替换的旧正文|旧正文后 HP 9/);
-        const toolName = options.tools[0].name;
-        assert.match(toolName, /^view_file_stream_/);
-        yield { type: 'tool-call-delta', index: 0, id: 'output', name: toolName, argumentsDelta: JSON.stringify({ buffer_content: rawOutput }) };
-        yield { type: 'block-end', index: 0, block: { type: 'tool-call', id: 'output', name: toolName, arguments: { buffer_content: rawOutput } } };
-        yield { type: 'finish', reason: { kind: 'tool-calls' } };
+        if (kunlun) {
+          const toolName = options.tools[0].name;
+          assert.match(toolName, /^view_file_stream_/);
+          yield { type: 'block-end', index: 0, block: { type: 'tool-call', id: 'output', name: toolName, arguments: { buffer_content: rawOutput } } };
+          yield { type: 'finish', reason: { kind: 'tool-calls' } };
+        } else {
+          assert.match(wire, /regenerate-only/); assert.doesNotMatch(wire, /normal-only/);
+          yield { type: 'text-delta', index: 0, text: '<div>X</div>' };
+          yield { type: 'finish', reason: { kind: 'stop' } };
+        }
       } };
     },
   };
-  const jobs = createBodyRegenerationJobs({ requireGame: async () => ({ sessionId: 'session' }), allowed: async () => true,
-    run: input => history.regenerateWithProvider({ ...input, onPhase: phase => { phases.push(phase); input.onPhase(phase); } }),
-    publish: async () => {} });
+  const providers = createBodyGenerationProviders({ allowed: async () => true });
+  const generation = createPluginBodyGeneration({ chatForSession: chats.forSession,
+    updateChat: chats.update.bind(chats), readRevision: chats.readRevision,
+    settings: async () => ({ storyGenerationMode: 'plugin-direct', storyGenerationProvider: 'dsh-tavern-STcontext:st-context' }), providers,
+    regenerateWithProvider: input => history.regenerateWithProvider({ ...input, onPhase: phase => { phases.push(phase); input.onPhase(phase); } }) });
   const owner = 'dsh-tavern-STcontext', handlers = new Map();
   let saved;
   apply({ get: () => undefined, llm, get agents() { assert.fail('must not read foreground selection'); }, tavern: {
+    capabilities: { bodyGeneration: 1 },
     readPluginData: async () => clone(saved), savePluginData: async ({ data }) => { saved = clone(data); },
     handle: (key, handler) => handlers.set(key, handler), onGameRemoved() {},
-    bodyRegenerator: entry => jobs.register(owner, { ...entry, generate: async input => { candidate = await entry.generate(input); return candidate; } }),
-    startBodyRegeneration: input => jobs.start(owner, input), bodyRegenerationStatus: input => jobs.status(owner, input),
-    cancelBodyRegeneration: input => jobs.cancel(owner, input),
+    bodyGenerator: entry => providers.register(owner, { ...entry, generate: async input => { candidate = await entry.generate(input); return candidate; } }),
   } });
   const call = (name, input) => handlers.get('dsh-tavern-stcontext/' + name)(input);
-  const presetSource = await readFile(process.env.STCONTEXT_PRESET_FIXTURE, 'utf8');
+  const presetSource = kunlun ? await readFile(process.env.STCONTEXT_PRESET_FIXTURE, 'utf8') : JSON.stringify(preset);
   const upload = await call('upload/begin', { name: 'user-imported.json', size: presetSource.length });
   for (let offset = 0, index = 0; offset < presetSource.length; offset += 50000, index++) await call('upload/chunk', { id: upload.id, index, text: presetSource.slice(offset, offset + 50000) });
   await call('upload/finish', { id: upload.id });
   await call('settings', { model: { provider: 'independent', model: 'plugin-story' } });
   assert.equal((await call('export', { id: saved.activeId })).text, presetSource);
-  const receipt = await call('start', { gameId: 'session' });
-  let status;
-  const deadline = Date.now() + 15000;
-  do {
-    await new Promise(resolve => setTimeout(resolve, 10));
-    status = await call('status', { gameId: 'session', id: receipt.id });
-  } while (['queued', 'running'].includes(status.status) && Date.now() < deadline);
-  assert.equal(status.status, 'completed', status.error?.message);
-  assert.equal(status.result.settlementStatus, 'done');
-  assert.equal(modelCalls, 1); assert.equal(candidate.metadata.outputRegexPasses, 1);
-  assert.equal(candidate.text, '平静的正文</content>');
-  assert.deepEqual(projections, [candidate.text]); assert.deepEqual(notifications, [3]);
+  const result = await generation.regenerate('session');
+  assert.equal(result.settlement, 'done');
+  assert.equal(modelCalls, 1);
+  assert.equal(candidate.text, kunlun ? '平静的正文</content>' : '<div>XX</div>');
+  assert.deepEqual(projections, [candidate.text]); assert.deepEqual(notifications, [failed ? 4 : 3]);
   assert.deepEqual(phases, ['generating', 'validating', 'committed', 'settling']);
   assert.equal(capturedMaterials.completeness.history, 'all-visible');
   assert.equal(capturedMaterials.history.length, 3);
@@ -131,11 +140,13 @@ test('real Kunlun import -> host materials/plugin DSH request -> replacement/nat
   const current = await chats.read();
   assert.equal(current.messages.at(-1).text, candidate.text);
   assert.equal(current.messages.at(-1).bodyRegenerationProcessed, true);
+  assert.ok(current.messages.some(row => row.text === '前轮完整可见正文'), 'previous successful body remains intact');
   assert.equal(current.posture, '新正文结算后状态');
   assert.equal(settlements.length, 1); assert.equal(settlements[0].posture, '本轮起点 HP 10');
   assert.deepEqual(settlements[0].messages.at(-1).variables, [{ hp: 10 }]);
   const visible = JSON.stringify(session.deriveMessages());
-  assert.match(visible, /平静的正文/); assert.doesNotMatch(visible, /应被替换的旧正文/);
+  assert.ok(visible.includes(candidate.text)); assert.doesNotMatch(visible, /应被替换的旧正文/);
   const preview = await call('request', { gameId: 'session' });
-  assert.equal(preview.report.protocol, 'kunlun-ide');
+  assert.equal(preview.report.protocol, kunlun ? 'kunlun-ide' : 'st');
+  assert.equal(preview.report.reason, failed ? 'retry' : 'regenerate');
 });
