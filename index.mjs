@@ -22,6 +22,8 @@ export function apply(ctx) {
   handle('upload/begin', input => store.begin(input));
   handle('upload/chunk', input => store.chunk(input));
   handle('upload/finish', input => store.finish(input));
+  handle('upload/cancel', input => store.cancel(input));
+  handle('preset/read', input => store.read(input));
   handle('select', input => store.select(input));
   handle('remove', input => store.remove(input));
   handle('export', input => store.export(input));

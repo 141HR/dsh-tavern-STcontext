@@ -8,6 +8,25 @@ window.__ModuleLoader__.load({
       apply(ctx) {
         const ui = ctx.tavernUi, call = (name, args = {}) => ui.callHost('dsh-tavern-stcontext/' + name, args);
         const editableSettings = value => ({ model: value?.model || null });
+        const drafts = new Map();
+        const clone = value => JSON.parse(JSON.stringify(value));
+        const markerIds = new Set(['worldInfoBefore', 'worldInfoAfter', 'personaDescription', 'charDescription', 'charPersonality', 'scenario', 'dialogueExamples', 'chatHistory']);
+        const orderOf = doc => doc.prompt_order.find(group => Number(group.character_id) === 100001) || (doc.prompt_order.length === 1 ? doc.prompt_order[0] : null);
+        function editorDocument(text) {
+          const doc = JSON.parse(text);
+          if (!doc || !Array.isArray(doc.prompts) || !doc.prompts.length || !Array.isArray(doc.prompt_order) || doc.prompt_order.some(group => !group || !Array.isArray(group.order))
+            || !Array.isArray(orderOf(doc)?.order) || doc.prompts.some(item => !item || typeof item.identifier !== 'string')
+            || orderOf(doc).order.some(item => !item || !doc.prompts.some(prompt => prompt.identifier === item.identifier))) throw new Error('JSON 缺少有效的 prompts 或当前 prompt_order');
+          if (doc.prompts.some(item => item.injection_trigger !== undefined && (!Array.isArray(item.injection_trigger) || item.injection_trigger.some(value => typeof value !== 'string')))) throw new Error('injection_trigger 必须是字符串数组');
+          if (doc.extensions !== undefined && (!doc.extensions || typeof doc.extensions !== 'object' || Array.isArray(doc.extensions))) throw new Error('extensions 必须是对象');
+          const rules = doc.extensions?.regex_scripts;
+          if (rules !== undefined && (!Array.isArray(rules) || rules.some(rule => !rule || typeof rule !== 'object' || (rule.placement !== undefined && !Array.isArray(rule.placement))))) throw new Error('regex_scripts 格式无效');
+          return doc;
+        }
+        function editorSnapshot(text) {
+          try { return { document: editorDocument(text), tab: 'prompts', error: '' }; }
+          catch (err) { return { document: null, tab: 'json', error: '请在完整 JSON 中修复后切换表单：' + err.message }; }
+        }
         const css = `
 .stc-scroll{box-sizing:border-box;flex:1 1 auto;width:100%;height:100%;min-width:0;min-height:0;overflow:auto;overscroll-behavior:contain}
 .stc-panel{--stc-surface:var(--dsw-specific-input-major,#fff);--stc-border:var(--dsw-alias-border-l2,#e3e4eb);--stc-muted:var(--dsw-alias-label-secondary,#717583);--stc-accent:var(--dsh-tavern-accent,#5956c9);--stc-soft:var(--dsh-tavern-accent-soft,#eeedf9);--stc-highlight:var(--stc-accent);box-sizing:border-box;width:100%;max-width:1020px;min-width:0;margin:0 auto;padding:24px;color:var(--dsw-alias-label-primary,inherit);font:inherit;font-size:14px;line-height:1.6;container:stcontext / inline-size}
@@ -64,6 +83,24 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
 .stc-panel .stc-request{display:grid;gap:14px}
 .stc-panel .stc-request pre{margin:0;padding:14px;border:1px solid var(--stc-border);border-radius:9px;background:rgba(128,128,144,.05);white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;max-height:440px;overflow:auto}
 .stc-panel .stc-request-name{font-size:12px;color:var(--stc-muted)}
+.stc-panel input,.stc-panel textarea{font:inherit}
+.stc-panel textarea.stc-select{resize:vertical;line-height:1.65;min-height:120px}
+.stc-panel .stc-editor{display:grid;gap:16px;margin-bottom:16px;border-top:3px solid var(--stc-accent)}
+.stc-panel .stc-editor fieldset{border:0;padding:0;margin:0;min-width:0}
+.stc-panel .stc-editor-layout{display:grid;grid-template-columns:minmax(200px,1fr) minmax(0,1.8fr);gap:18px;align-items:start}
+.stc-panel .stc-editor-form{display:grid;gap:14px;min-width:0}
+.stc-panel .stc-editor-list{display:grid;gap:6px;max-height:460px;overflow:auto;overscroll-behavior:contain;padding:3px}
+.stc-panel .stc-prompt-row{display:flex;align-items:center;gap:4px;padding:6px;border:1px solid var(--stc-border);border-radius:8px;min-width:0}
+.stc-panel .stc-prompt-row[data-selected=true]{background:var(--stc-soft);border-color:var(--stc-accent)}
+.stc-panel .stc-prompt-name{flex:1;text-align:left;justify-content:flex-start;min-width:0;overflow-wrap:anywhere}
+.stc-panel .stc-check{display:flex;gap:7px;align-items:center;font-size:12px;font-weight:400}
+.stc-panel input[type=checkbox]{accent-color:var(--stc-accent);flex:none}
+.stc-panel .stc-editor-tabs{display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid var(--stc-border);padding-bottom:12px}
+.stc-panel [role=tab][aria-selected=true]{color:var(--stc-highlight);background:var(--stc-soft);border-color:var(--stc-accent)}
+.stc-panel .stc-code{font-family:ui-monospace,monospace;font-size:12px;tab-size:2;min-height:360px!important}
+.stc-panel .stc-confirm{display:grid;gap:10px;margin-bottom:16px;border:1px solid var(--stc-accent);padding:14px;border-radius:9px;background:var(--stc-soft)}
+.stc-panel .stc-editor-footer{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;border-top:1px solid var(--stc-border);padding-top:14px}
+@container stcontext (max-width:650px){.stc-panel .stc-editor-layout{grid-template-columns:1fr}.stc-panel .stc-editor-list{max-height:260px}}
 @container stcontext (max-width:480px){.stc-panel .stc-header{align-items:flex-start}
 .stc-panel .stc-card{padding:16px}
 .stc-panel .stc-actions{align-items:stretch}
@@ -87,8 +124,34 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
           const [catalog, setCatalog] = React.useState([]), [modelsLoading, setModelsLoading] = React.useState(false), [modelError, setModelError] = React.useState('');
           const [reasoning, setReasoning] = React.useState({ key: '', efforts: [], loading: false, error: '' });
           const [request, setRequest] = React.useState(''), [requestShown, setRequestShown] = React.useState(false);
+          const draftKey = settingsPage ? 'settings' : (close ? 'overlay:' : 'panel:') + (gameId || '');
+          const [editor, setEditor] = React.useState(drafts.get(draftKey) || null), [confirmation, setConfirmation] = React.useState(null);
+          const editorRef = React.useRef(editor);
+          const editorElement = React.useRef(null);
+          const confirmationElement = React.useRef(null);
+          editorRef.current = editor;
           const file = React.useRef(null), alive = React.useRef(true);
-          const busy = working;
+          const busy = working || !!confirmation;
+          React.useEffect(() => {
+            if (editor) { editorElement.current?.scrollIntoView?.({ block: 'start' }); editorElement.current?.focus?.({ preventScroll: true }); }
+          }, [!!editor]);
+          React.useEffect(() => {
+            if (confirmation) { confirmationElement.current?.scrollIntoView?.({ block: 'center' }); confirmationElement.current?.focus?.({ preventScroll: true }); }
+          }, [!!confirmation]);
+          React.useEffect(() => {
+            const beforeUnload = event => { if (editorRef.current?.dirty) { event.preventDefault(); event.returnValue = ''; } };
+            window.addEventListener?.('beforeunload', beforeUnload);
+            return () => {
+              window.removeEventListener?.('beforeunload', beforeUnload);
+              if (editorRef.current?.dirty) drafts.set(draftKey, editorRef.current);
+              else drafts.delete(draftKey);
+            };
+          }, []);
+          function discardThen(run) {
+            if (editor?.dirty) setConfirmation({ run });
+            else { clearEditor(); run(); }
+          }
+          function clearEditor() { editorRef.current = null; setEditor(null); drafts.delete(draftKey); }
           async function refresh(resetSettings = true) {
             const value = await call('config');
             if (alive.current) { setConfig(value); if (resetSettings) setSettings(editableSettings(value.settings)); }
@@ -120,13 +183,175 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
             if (!selected) return;
             await act(async () => {
               if (selected.size > 2 * 1024 * 1024) throw new Error('预设文件不能超过 2 MB');
-              const text = await selected.text(), upload = await call('upload/begin', { name: selected.name, size: text.length });
+              await uploadText(await selected.text(), { name: selected.name });
+              await refresh(false); setReport(null); setNotice('预设已导入');
+            });
+          }
+          async function uploadText(text, options) {
+            const upload = await call('upload/begin', { ...options, size: text.length });
+            try {
               for (let index = 0, offset = 0; offset < text.length; index++, offset += 50000) {
                 await call('upload/chunk', { id: upload.id, index, text: text.slice(offset, offset + 50000) });
               }
-              await call('upload/finish', { id: upload.id });
-              await refresh(false); setReport(null); setNotice('预设已导入');
+              return await call('upload/finish', { id: upload.id });
+            } catch (error) { await call('upload/cancel', { id: upload.id }).catch(() => {}); throw error; }
+          }
+          async function openEditor(id) {
+            let info, offset = 0; const chunks = [];
+            do {
+              const part = await call('preset/read', { id, offset, ...(info ? { revision: info.revision } : {}) });
+              info = part; chunks.push(part.text); offset += part.text.length;
+            } while (offset < info.total);
+            const text = chunks.join(''), snapshot = editorSnapshot(text), doc = snapshot.document;
+            if (alive.current) setEditor({ id, revision: info.revision, name: info.name, text, ...snapshot, dirty: false,
+              promptId: doc ? orderOf(doc).order[0]?.identifier || doc.prompts[0].identifier : '', search: '', regexIndex: 0 });
+          }
+          function changeDocument(work) {
+            setEditor(current => {
+              const doc = clone(current.document); work(doc);
+              return { ...current, document: doc, text: JSON.stringify(doc, null, 2), dirty: true, report: null, error: '' };
             });
+          }
+          function changeTab(tab) {
+            try {
+              const doc = editor.tab === 'json' ? editorDocument(editor.text) : editor.document;
+              const promptId = doc.prompts.some(item => item.identifier === editor.promptId) ? editor.promptId : orderOf(doc).order[0]?.identifier || doc.prompts[0].identifier;
+              setEditor({ ...editor, document: doc, promptId, tab, error: '' });
+            } catch (err) { setEditor({ ...editor, error: '无法切换：' + err.message }); }
+          }
+          async function saveEditor(operation) {
+            setWorking(true); setError(''); setNotice('');
+            const draft = editor;
+            try {
+              const value = await uploadText(draft.text, { name: operation === 'copy' ? draft.name.replace(/\.json$/i, '').slice(0, 148) + ' 副本.json' : draft.name,
+                operation, presetId: draft.id, revision: draft.revision });
+              if (!alive.current) return;
+              if (operation === 'validate') setEditor(current => ({ ...current, report: value.report, error: '' }));
+              else {
+                const id = operation === 'copy' ? value.activeId : draft.id;
+                const record = value.presets.find(item => item.id === id);
+                setConfig(current => ({ ...current, ...value })); setReport(null);
+                const snapshot = editorSnapshot(draft.text);
+                setEditor({ ...draft, ...snapshot, tab: snapshot.document ? draft.tab : 'json', id, revision: record.revision, name: record.name, dirty: false, report: record.report });
+                drafts.delete(draftKey); setNotice(operation === 'copy' ? '已另存为副本并选用' : '预设已保存，下次生成生效');
+              }
+            } catch (err) { if (alive.current) setEditor(current => ({ ...current, error: err.message || String(err) })); }
+            finally { if (alive.current) setWorking(false); }
+          }
+          function renderEditor() {
+            if (!editor) return null;
+            const doc = editor.document || { prompts: [], prompt_order: [{ character_id: 100001, order: [] }] }, order = orderOf(doc).order;
+            const prompt = doc.prompts.find(item => item.identifier === editor.promptId);
+            const isMarker = prompt && (prompt.marker === true || markerIds.has(prompt.identifier));
+            const inOrder = prompt && order.find(item => item.identifier === prompt.identifier);
+            const regexes = Array.isArray(doc.extensions?.regex_scripts) ? doc.extensions.regex_scripts : [];
+            const rule = regexes[editor.regexIndex];
+            const button = (label, onClick, disabled = false, extra = {}) => h('button', { type: 'button', className: 'stc-button', disabled: busy || disabled, onClick, ...extra }, label);
+            const field = (label, value, onChange, options = {}) => h('label', { className: 'stc-field' }, label,
+              h(options.multiline ? 'textarea' : 'input', { className: 'stc-select' + (options.code ? ' stc-code' : ''), 'aria-label': label,
+                value: value ?? '', onChange: event => onChange(event.target.value), spellCheck: !options.code,
+                ...Object.fromEntries(Object.entries(options).filter(([key]) => !['multiline', 'code'].includes(key))) }));
+            const check = (label, checked, onChange, disabled = false) => h('label', { className: 'stc-check' },
+              h('input', { type: 'checkbox', 'aria-label': label, checked, disabled, onChange: event => onChange(event.target.checked) }), label);
+            const select = (label, value, options, onChange, disabled = false) => h('label', { className: 'stc-field' }, label,
+              h('select', { className: 'stc-select', 'aria-label': label, value, disabled, onChange: event => onChange(event.target.value) },
+                ...options.map(([id, name]) => h('option', { key: id, value: id }, name))));
+            const patchPrompt = (key, value) => changeDocument(next => { const item = next.prompts.find(item => item.identifier === prompt.identifier); if (value === undefined) delete item[key]; else item[key] = value; });
+            const numberValue = value => value === '' ? undefined : Number(value);
+            const enablePrompt = (id, enabled) => changeDocument(next => {
+              const entries = orderOf(next).order, entry = entries.find(item => item.identifier === id);
+              if (entry) entry.enabled = enabled; else entries.push({ identifier: id, enabled });
+            });
+            const movePrompt = (id, target) => changeDocument(next => {
+              const entries = orderOf(next).order, from = entries.findIndex(item => item.identifier === id), to = entries.findIndex(item => item.identifier === target);
+              if (from >= 0 && to >= 0) entries.splice(to, 0, entries.splice(from, 1)[0]);
+            });
+            const addPrompt = duplicate => {
+              let id; do { id = 'stcontext-' + Math.random().toString(36).slice(2); } while (doc.prompts.some(item => item.identifier === id));
+              changeDocument(next => {
+                const item = duplicate ? { ...clone(prompt), identifier: id, name: (prompt.name || prompt.identifier) + ' 副本', system_prompt: false }
+                  : { identifier: id, name: '新提示词', role: 'system', content: '', injection_position: 0, injection_depth: 4, injection_order: 100, injection_trigger: [] };
+                next.prompts.push(item); orderOf(next).order.push({ identifier: id, enabled: true });
+              });
+              setEditor(current => ({ ...current, promptId: id, search: '' }));
+            };
+            const patchRule = (key, value) => changeDocument(next => { const item = next.extensions.regex_scripts[editor.regexIndex]; if (value === undefined) delete item[key]; else item[key] = value; });
+            const displayed = [...order.map(entry => doc.prompts.find(item => item.identifier === entry.identifier)), ...doc.prompts.filter(item => !order.some(entry => entry.identifier === item.identifier))]
+              .filter(item => item && [item.name, item.identifier, item.content].join('\n').toLowerCase().includes(editor.search.toLowerCase()));
+            return h('section', { ref: editorElement, tabIndex: -1, className: 'stc-card stc-editor', 'aria-label': '预设编辑器' },
+              h('div', { className: 'stc-card-title' }, h('div', null, h('h3', null, '编辑预设'), h('p', { className: 'stc-muted', role: 'status' }, editor.dirty ? '草稿有未保存的修改' : '与已保存预设一致')),
+                h('div', { className: 'stc-row' }, button('重新加载预设', () => discardThen(() => act(() => openEditor(editor.id)))), button('关闭编辑器', () => discardThen(() => {})))),
+              h('fieldset', { disabled: busy, className: 'stc-editor-form' },
+                field('预设名称', editor.name, name => setEditor({ ...editor, name, dirty: true, error: '' }), { maxLength: 160 }),
+                h('div', { className: 'stc-editor-tabs', role: 'tablist', 'aria-label': '预设编辑分类' },
+                  ...[['prompts', '提示词'], ['regex', '正则规则'], ['json', '完整 JSON']].map(([id, label]) =>
+                    button(label, () => changeTab(id), false, { key: id, role: 'tab', 'aria-selected': editor.tab === id }))),
+                h('div', { role: 'tabpanel', className: 'stc-editor-form', 'aria-label': '预设编辑内容' },
+                editor.tab === 'prompts' && h('div', { className: 'stc-editor-layout' },
+                  h('div', { className: 'stc-editor-form' },
+                    h('div', { className: 'stc-row stc-between' }, h('span', { className: 'stc-muted' }, '顺序 ' + orderOf(doc).character_id + ' · ' + doc.prompts.length + ' 项'), button('新增提示词', () => addPrompt(false))),
+                    field('搜索提示词', editor.search, search => setEditor({ ...editor, search }), { type: 'search', placeholder: '名称、标识或内容' }),
+                    check('合并相邻系统消息', !!doc.squash_system_messages, value => changeDocument(next => { next.squash_system_messages = value; })),
+                    h('div', { className: 'stc-editor-list', 'aria-label': '提示词列表' }, ...displayed.map(item => {
+                      const index = order.findIndex(entry => entry.identifier === item.identifier), entry = order[index], title = item.name || item.identifier;
+                      return h('div', { key: item.identifier, className: 'stc-prompt-row', 'data-selected': item.identifier === editor.promptId,
+                        draggable: !busy && index >= 0, onDragStart: event => event.dataTransfer.setData('text/plain', item.identifier),
+                        onDragOver: event => event.preventDefault(), onDrop: event => { event.preventDefault(); if (!busy) movePrompt(event.dataTransfer.getData('text/plain'), item.identifier); } },
+                        h('input', { type: 'checkbox', checked: !!entry && entry.enabled !== false, 'aria-label': '启用 ' + title, onChange: event => enablePrompt(item.identifier, event.target.checked) }),
+                        button(title + (index < 0 ? ' · 未加入顺序' : ''), () => setEditor({ ...editor, promptId: item.identifier }), false, { className: 'stc-button stc-quiet stc-prompt-name', 'aria-pressed': item.identifier === editor.promptId }),
+                        button('↑', () => movePrompt(item.identifier, order[index - 1].identifier), index <= 0, { className: 'stc-button stc-quiet', 'aria-label': '上移 ' + title }),
+                        button('↓', () => movePrompt(item.identifier, order[index + 1].identifier), index < 0 || index === order.length - 1, { className: 'stc-button stc-quiet', 'aria-label': '下移 ' + title }));
+                    }), !displayed.length && h('p', { className: 'stc-muted' }, '没有匹配的提示词'))),
+                  prompt ? h('div', { className: 'stc-editor-form' },
+                    h('p', { className: 'stc-meta' }, prompt.identifier),
+                    field('条目名称', prompt.name, value => patchPrompt('name', value)),
+                    check('启用此提示词', !!inOrder && inOrder.enabled !== false, value => enablePrompt(prompt.identifier, value)),
+                    select('消息角色', prompt.role || 'system', [['system', 'System · 系统'], ['user', 'User · 用户'], ['assistant', 'Assistant · 助手']], value => patchPrompt('role', value)),
+                    isMarker ? h('p', { className: 'stc-message stc-notice' }, '材料占位项：内容由宿主提供。完整历史与必要材料始终保留，关闭占位项只会改变其插入位置。')
+                      : field('提示词内容', prompt.content, value => patchPrompt('content', value), { multiline: true, rows: 10 }),
+                    !isMarker && select('注入位置', String(prompt.injection_position ?? 0), [['0', '相对位置 · 按列表顺序'], ['1', '聊天内 · 指定深度']], value => patchPrompt('injection_position', Number(value))),
+                    !isMarker && Number(prompt.injection_position) === 1 && h('div', { className: 'stc-grid' },
+                      field('注入深度', prompt.injection_depth ?? 0, value => patchPrompt('injection_depth', numberValue(value)), { type: 'number', min: 0, step: 1 }),
+                      field('同深度顺序', prompt.injection_order ?? 0, value => patchPrompt('injection_order', numberValue(value)), { type: 'number', min: 0, step: 1 })),
+                    h('div', { className: 'stc-editor-form' }, h('p', { className: 'stc-muted' }, '触发类型（全不选表示全部；宿主当前使用正常生成或重生成）'),
+                      h('div', { className: 'stc-row' }, ...[...new Set(['normal', 'regenerate', 'continue', 'swipe', 'quiet', 'impersonate', ...(prompt.injection_trigger || [])])].map(trigger =>
+                        h('span', { key: trigger }, check(({ normal: '正常生成', regenerate: '重生成', continue: '继续', swipe: '滑动', quiet: '静默', impersonate: '扮演用户' })[trigger] || trigger,
+                          prompt.injection_trigger?.includes(trigger) || false, enabled => patchPrompt('injection_trigger', enabled ? [...(prompt.injection_trigger || []), trigger] : (prompt.injection_trigger || []).filter(item => item !== trigger))))))),
+                    h('div', { className: 'stc-row' }, button('复制条目', () => addPrompt(true), isMarker),
+                      button('从当前顺序移除', () => changeDocument(next => { orderOf(next).order = orderOf(next).order.filter(item => item.identifier !== prompt.identifier); }), !inOrder)),
+                    h('p', { className: 'stc-muted' }, '移出顺序后仍保留条目及扩展引用；勾选可重新加入。永久删除或编辑扩展请使用完整 JSON。'))
+                    : h('p', { className: 'stc-muted' }, '选择左侧条目，或新增提示词。')),
+                editor.tab === 'regex' && h('div', { className: 'stc-editor-form' },
+                  h('p', { className: 'stc-muted' }, '编辑原生 extensions.regex_scripts。规则按列表顺序执行；历史正文不会重新执行输出正则。其他规则选项及 SPreset 绑定可在完整 JSON 中编辑。'),
+                  h('div', { className: 'stc-row' }, button('新增正则', () => {
+                    changeDocument(next => { next.extensions ||= {}; next.extensions.regex_scripts ||= []; next.extensions.regex_scripts.push({ id: 'stcontext-' + Math.random().toString(36).slice(2), scriptName: '新正则', findRegex: '/(?:)/g', replaceString: '', disabled: true, placement: [2], trimStrings: [] }); });
+                    setEditor(current => ({ ...current, regexIndex: regexes.length }));
+                  })),
+                  select('正则条目', rule ? String(editor.regexIndex) : '', [['', '选择规则'], ...regexes.map((item, index) => [String(index), (index + 1) + '. ' + (item.scriptName || item.name || '未命名')])], value => setEditor({ ...editor, regexIndex: value === '' ? -1 : Number(value) })),
+                  rule && h('div', { className: 'stc-editor-form' },
+                    field('规则名称', rule.scriptName, value => patchRule('scriptName', value)),
+                    check('启用此正则', rule.disabled !== true && rule.enabled !== false, value => changeDocument(next => { const item = next.extensions.regex_scripts[editor.regexIndex]; item.disabled = !value; if (Object.hasOwn(item, 'enabled')) item.enabled = value; })),
+                    field('查找正则', rule.findRegex, value => patchRule('findRegex', value), { multiline: true, rows: 3, spellCheck: false }),
+                    field('替换文本', rule.replaceString, value => patchRule('replaceString', value), { multiline: true, rows: 4 }),
+                    h('div', { className: 'stc-row' }, ...[[1, '用户输入'], [2, '模型输出']].map(([value, label]) => h('span', { key: value }, check(label, rule.placement?.map(Number).includes(value) || false,
+                      enabled => patchRule('placement', enabled ? [...(rule.placement || []), value] : (rule.placement || []).filter(item => Number(item) !== value)))))),
+                    h('div', { className: 'stc-row' }, ...[[-1, '上移正则'], [1, '下移正则']].map(([delta, label]) => button(label, () => {
+                      changeDocument(next => { const items = next.extensions.regex_scripts; items.splice(editor.regexIndex + delta, 0, items.splice(editor.regexIndex, 1)[0]); });
+                      setEditor(current => ({ ...current, regexIndex: current.regexIndex + delta }));
+                    }, editor.regexIndex + delta < 0 || editor.regexIndex + delta >= regexes.length, { key: delta })),
+                    button('删除正则', () => { changeDocument(next => { next.extensions.regex_scripts.splice(editor.regexIndex, 1); }); setEditor(current => ({ ...current, regexIndex: Math.max(0, current.regexIndex - 1) })); })))),
+                editor.tab === 'json' && h('div', { className: 'stc-editor-form' },
+                  h('p', { className: 'stc-muted' }, '编辑完整预设，包括 SPreset、助手脚本和未映射字段。切换回表单时解析 JSON；校验和保存只做静态检查，不执行脚本或调用模型。'),
+                  field('预设 JSON', editor.text, text => setEditor({ ...editor, text, dirty: true, report: null, error: '' }), { multiline: true, code: true, rows: 22 })))),
+              editor.error && h('p', { className: 'stc-message stc-error', role: 'alert' }, editor.error),
+              editor.report && h('details', { className: 'stc-details', open: true }, h('summary', null, '草稿校验报告'),
+                h('p', { className: 'stc-muted' }, editor.report.blockers?.length ? '结构有效，可保存；以下问题会阻止生成。' : '结构校验通过；实际生成前仍会检查材料与模型预算。'),
+                ...(editor.report.blockers || []).map((text, index) => h('p', { key: index, className: 'stc-message stc-error' }, text)),
+                h('ul', null, ...(editor.report.warnings || []).map((text, index) => h('li', { key: index, className: 'stc-muted' }, text)))),
+              h('div', { className: 'stc-editor-footer' }, h('div', { className: 'stc-row' }, button('校验草稿', () => saveEditor('validate')),
+                button('导出草稿', () => download(editor.name.replace(/\.json$/i, '') + '.json', editor.text))),
+                h('div', { className: 'stc-row' }, button('另存为副本', () => saveEditor('copy')),
+                  button(working ? '处理中…' : '保存预设', () => saveEditor('replace'), !editor.dirty, { className: 'stc-button stc-primary' }))));
           }
           async function readRequest() {
             let offset = 0, chunks = [], info;
@@ -183,25 +408,31 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
               h('div', { className: 'stc-heading' }, h('span', { className: 'stc-brand', 'aria-hidden': true }, 'ST'),
                 h('div', null, h('h2', null, 'STcontext'), h('p', { className: 'stc-subtitle' }, '完整可见历史 · 独立模型生成'))),
               h('div', { className: 'stc-row' }, h('span', { className: 'stc-header-status' }, badge(!config ? '加载中' : ready ? '配置就绪' : '待配置', ready ? '' : 'neutral')),
-                close && h('button', { className: 'stc-button stc-quiet', onClick: close }, '关闭'))),
+                close && h('button', { className: 'stc-button stc-quiet', disabled: busy, onClick: () => discardThen(close) }, '关闭'))),
             h('div', { className: 'stc-feedback' }, error && message(error, 'error', 'alert'), notice && message(notice),
               config?.hostReady === false && message('宿主尚未提供插件正文生成接口，请更新上游 DSH Tavern。预设仍可导入保存。', 'error', 'alert')),
+            confirmation && h('div', { ref: confirmationElement, tabIndex: -1, className: 'stc-confirm', role: 'alertdialog', 'aria-label': '未保存的预设更改' },
+              h('p', null, '当前预设草稿尚未保存，继续会放弃这些修改。'),
+              h('div', { className: 'stc-row' },
+                h('button', { className: 'stc-button', onClick: () => { setConfirmation(null); editorElement.current?.focus?.(); } }, '继续编辑'),
+                h('button', { className: 'stc-button stc-danger', onClick: () => { const run = confirmation.run; setConfirmation(null); clearEditor(); run(); } }, '放弃更改并继续'))),
             h('div', { className: 'stc-grid' },
             h('section', { className: 'stc-card stc-config-card', 'aria-label': '预设管理' },
               h('div', { className: 'stc-card-title' }, h('div', null, h('h3', null, '预设'), h('p', { className: 'stc-muted' }, '管理叙事规则与上下文组织方式')),
                 h('button', { className: 'stc-button', disabled: busy, onClick: () => file.current?.click() }, '导入 JSON')),
-              h('input', { ref: file, type: 'file', accept: '.json,application/json', style: { display: 'none' }, onChange: event => { const selectedFile = event.target.files?.[0]; event.target.value = ''; importFile(selectedFile); } }),
+              h('input', { ref: file, type: 'file', accept: '.json,application/json', style: { display: 'none' }, onChange: event => { const selectedFile = event.target.files?.[0]; event.target.value = ''; if (selectedFile) discardThen(() => importFile(selectedFile)); } }),
               !selected && h('div', { className: 'stc-empty' }, h('p', null, config ? '还没有选定预设' : '正在读取预设…'), h('p', { className: 'stc-muted' }, '导入 SillyTavern 预设 JSON，即可开始配置。')),
               h('label', { className: 'stc-field' }, '当前预设',
                 h('select', { className: 'stc-select', 'aria-label': '当前预设', value: config?.activeId || '', disabled: busy || !config?.presets.length,
-                  onChange: event => { const id = event.target.value; act(async () => { await call('select', { id }); setReport(null); await refresh(false); }); } },
+                  onChange: event => { const id = event.target.value; discardThen(() => act(async () => { await call('select', { id }); setReport(null); await refresh(false); })); } },
                   h('option', { value: '', disabled: true }, '请选择导入的预设'),
                   ...(config?.presets || []).map(item => h('option', { key: item.id, value: item.id }, item.name)))),
               selected && h('div', { className: 'stc-row' }, badge((selected.report?.enabledPrompts || 0) + ' 项提示词', 'neutral'), badge((selected.report?.regexCount || 0) + ' 条正则', 'neutral')),
+              h('button', { className: 'stc-button', disabled: !selected || busy || !!editor, onClick: () => act(() => openEditor(selected.id)) }, '编辑预设'),
               h('div', { className: 'stc-card-footer stc-row stc-between' }, h('span', { className: 'stc-muted' }, 'JSON · 最大 2 MB'),
                 h('div', { className: 'stc-row' },
-                  h('button', { className: 'stc-button stc-quiet', disabled: !selected || working, onClick: () => act(async () => { const value = await call('export', { id: selected.id }); download(value.name, value.text); }) }, '导出原文件'),
-                  h('button', { className: 'stc-button stc-quiet stc-danger', disabled: !selected || busy, onClick: () => act(async () => { await call('remove', { id: selected.id }); await refresh(false); setReport(null); }) }, '移除')))),
+                  h('button', { className: 'stc-button stc-quiet', disabled: !selected || working, onClick: () => act(async () => { const value = await call('export', { id: selected.id }); download(value.name.replace(/\.json$/i, '') + '.json', value.text); }) }, '导出预设'),
+                  h('button', { className: 'stc-button stc-quiet stc-danger', disabled: !selected || busy, onClick: () => discardThen(() => act(async () => { await call('remove', { id: selected.id }); await refresh(false); setReport(null); })) }, '移除')))),
             h('section', { className: 'stc-card stc-config-card', 'aria-label': '模型设置' },
               h('div', { className: 'stc-card-title' }, h('div', null, h('h3', null, '正文模型'), h('p', { className: 'stc-muted' }, '用于正文生成与重生成')), badge('独立配置')),
               h('label', { className: 'stc-field' }, '插件正文模型',
@@ -229,6 +460,7 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
               ...catalog.filter(group => group.error).map(group => h('p', { key: group.provider, className: 'stc-message stc-error', role: 'alert' }, group.providerName + '：' + group.error)),
               h('div', { className: 'stc-card-footer stc-row stc-between' }, h('span', { className: 'stc-muted', role: 'status' }, settingsDirty ? '有未保存的更改' : '设置对所有会话生效'),
                 h('button', { className: 'stc-button', disabled: busy || !config || reasoningLoading, onClick: () => act(async () => { await saveSettings(); setNotice('设置已保存'); }) }, '保存设置')))),
+            renderEditor(),
             h('section', { className: 'stc-card stc-generation', 'aria-label': '使用说明' },
               h('h3', null, '正文生成'),
               h('p', { className: 'stc-muted' }, '先保存预设与模型设置，再在「设置 → DSH Tavern → 剧情」选择 STcontext 和「插件直接生成」。如需前台模型先查世界书，选择「前台检索后由插件生成」。本局设置可覆盖全局选择。'),

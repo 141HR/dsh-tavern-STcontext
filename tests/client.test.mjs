@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import { apply } from '../index.mjs';
+import { decodePreset } from '../lib/store.mjs';
 
 const source = await readFile(new URL('../client.js', import.meta.url), 'utf8');
 const simplePreset = { prompts: [{ identifier: 'chatHistory', marker: true }],
@@ -87,9 +88,10 @@ function harness({ hostReady = true, initialModel, initialSettings = {}, catalog
   function nodes(node = tree) {
     return node && typeof node === 'object' ? [node, ...(node.children || []).flatMap(child => nodes(child))] : [];
   }
-  const contents = node => typeof node === 'string' || typeof node === 'number' ? String(node) : (node?.children || []).map(contents).join('');
+  const contents = node => typeof node === 'string' || typeof node === 'number' ? String(node) : node?.type === 'style' ? '' : (node?.children || []).map(contents).join('');
   return {
     calls, downloads,
+    host: (name, input) => ui.callHost('dsh-tavern-stcontext/' + name, input),
     get settingsSpec() { return settingsSpec; },
     get saved() { return structuredClone(saved); }, set modelFailure(value) { modelFailure = value; },
     async mount(useAction = false) {
@@ -101,6 +103,9 @@ function harness({ hostReady = true, initialModel, initialSettings = {}, catalog
     },
     async input(file) { const target = { files: [file], value: 'selected.json' }; nodes().find(node => node.type === 'input' && node.props.type === 'file').props.onChange({ target }); assert.equal(target.value, ''); await flush(); },
     async click(label) { const element = nodes().find(node => node.type === 'button' && contents(node) === label); assert.ok(element, label); assert.ok(!element.props.disabled, label + ' must be enabled'); await element.props.onClick(); await flush(); },
+    async field(label, value) { const node = nodes().find(node => ['input', 'textarea', 'select'].includes(node.type) && node.props['aria-label'] === label); assert.ok(node, label); assert.ok(!node.props.disabled); node.props.onChange({ target: { value, checked: value } }); await flush(); },
+    fieldValue: label => nodes().find(node => node.props?.['aria-label'] === label)?.props.value,
+    async labeledClick(label) { const node = nodes().find(node => node.type === 'button' && node.props['aria-label'] === label); assert.ok(node); assert.ok(!node.props.disabled); node.props.onClick(); await flush(); },
     numberInputs: () => nodes().filter(node => node.type === 'input' && node.props.type === 'number').length,
     async choose(label, value, settle = true) { const node = nodes().find(node => node.type === 'select' && node.props['aria-label'] === label); assert.ok(node, label); assert.ok(!node.props.disabled); node.props.onChange({ target: { value } }); if (settle) await flush(); else render(); },
     flush,
@@ -112,6 +117,81 @@ function harness({ hostReady = true, initialModel, initialSettings = {}, catalog
   };
 }
 const file = (text, name = 'imported.json') => ({ name, size: Buffer.byteLength(text), text: async () => text });
+
+test('editor updates prompts, order and regex while retaining hidden sampling and extension data', async () => {
+  const h = harness();
+  const doc = { ...simplePreset, temperature: .65, top_p: .9, openai_max_tokens: 4096,
+    prompts: [{ identifier: 'main', name: '主提示词', role: 'system', content: 'original', custom: { keep: true } }, ...simplePreset.prompts],
+    prompt_order: [{ character_id: 100000, order: [{ identifier: 'main', enabled: false }] }, { character_id: 100001, order: [{ identifier: 'main', enabled: true }, { identifier: 'chatHistory', enabled: true }] }],
+    extensions: { unknown: { preserve: [1, '脚本'] }, regex_scripts: [{ scriptName: '规则', findRegex: '/X/g', replaceString: 'XX', placement: [2], minDepth: 0, custom: 'keep' }] } };
+  try {
+    await h.mount('settings'); await h.input(file(JSON.stringify(doc)));
+    const id = h.saved.activeId;
+    await h.click('编辑预设');
+    await h.field('预设名称', '我的预设'); await h.field('提示词内容', '新的提示词 {{user}}');
+    await h.choose('消息角色', 'user'); await h.choose('注入位置', '1');
+    await h.field('注入深度', '2'); await h.field('正常生成', true);
+    await h.labeledClick('下移 主提示词');
+    await h.click('新增提示词'); await h.field('条目名称', '额外规则'); await h.field('提示词内容', 'added');
+    await h.click('复制条目'); await h.click('从当前顺序移除');
+    assert.equal(h.disabled('生成参数'), undefined);
+    assert.equal(h.fieldValue('温度'), undefined); assert.equal(h.fieldValue('输出 token 上限'), undefined);
+    await h.field('合并相邻系统消息', true);
+    await h.click('正则规则'); await h.field('替换文本', 'YYY');
+    await h.click('校验草稿'); assert.match(h.text(), /结构校验通过/);
+    assert.equal(JSON.parse(decodePreset(h.saved.presets[0].data)).prompts[0].content, 'original');
+    await h.click('保存预设'); assert.match(h.text(), /下次生成生效/);
+    const result = JSON.parse(decodePreset(h.saved.presets[0].data));
+    assert.equal(h.saved.activeId, id); assert.equal(h.saved.presets[0].name, '我的预设');
+    assert.equal(result.prompts[0].content, '新的提示词 {{user}}'); assert.equal(result.prompts[0].role, 'user');
+    assert.equal(result.prompts[0].injection_depth, 2); assert.deepEqual(result.prompts[0].injection_trigger, ['normal']);
+    assert.deepEqual(result.prompts[0].custom, { keep: true });
+    assert.deepEqual(result.prompt_order[0], doc.prompt_order[0]); assert.equal(result.prompt_order[1].order[0].identifier, 'chatHistory');
+    assert.equal(result.prompts.length, 4); assert.equal(result.prompt_order[1].order.length, 3);
+    assert.equal(result.temperature, .65); assert.equal(result.top_p, .9); assert.equal(result.openai_max_tokens, 4096);
+    assert.equal(result.squash_system_messages, true);
+    assert.deepEqual(result.extensions.unknown, doc.extensions.unknown);
+    assert.deepEqual(result.extensions.regex_scripts[0], { ...doc.extensions.regex_scripts[0], replaceString: 'YYY' });
+    await h.click('导出预设'); assert.deepEqual(JSON.parse(await h.downloads[0].blob.text()), result);
+    await h.click('另存为副本'); assert.equal(h.saved.presets.length, 2); assert.notEqual(h.saved.activeId, id);
+  } finally { h.destroy(); }
+});
+
+test('editor retains invalid JSON and conflicted drafts, guards discard, and rescues a copy', async () => {
+  const h = harness();
+  try {
+    await h.mount(); await h.input(file(JSON.stringify(simplePreset))); await h.click('编辑预设');
+    const original = h.saved.presets[0].data;
+    await h.click('完整 JSON'); await h.field('预设 JSON', '{broken');
+    await h.click('提示词'); assert.match(h.text(), /无法切换/); assert.equal(h.fieldValue('预设 JSON'), '{broken');
+    await h.click('保存预设'); assert.match(h.text(), /JSON 无效/); assert.equal(h.saved.presets[0].data, original);
+    await h.click('关闭编辑器'); assert.match(h.text(), /继续会放弃/); await h.click('继续编辑');
+    await h.field('预设 JSON', JSON.stringify({ ...simplePreset, notes: '保留我的更改' }));
+    // Importing identical bytes from another window changes the record revision.
+    const text = JSON.stringify(simplePreset), upload = await h.host('upload/begin', { name: 'other.json', size: text.length });
+    await h.host('upload/chunk', { id: upload.id, index: 0, text }); await h.host('upload/finish', upload);
+    await h.click('保存预设'); assert.match(h.text(), /其他窗口修改/);
+    assert.match(h.fieldValue('预设 JSON'), /保留我的更改/);
+    await h.click('另存为副本'); assert.equal(h.saved.presets.length, 2);
+    assert.equal(JSON.parse(decodePreset(h.saved.presets.find(item => item.id === h.saved.activeId).data)).notes, '保留我的更改');
+    await h.field('预设 JSON', '{discard'); await h.click('关闭编辑器'); await h.click('放弃更改并继续');
+    assert.equal(h.fieldValue('预设 JSON'), undefined);
+    await h.click('编辑预设'); await h.click('完整 JSON'); assert.doesNotMatch(h.fieldValue('预设 JSON'), /discard/);
+  } finally { h.destroy(); }
+});
+
+test('presets outside the form shape remain repairable as JSON without losing source data', async () => {
+  const h = harness();
+  try {
+    await h.mount(); await h.input(file(JSON.stringify({ ...simplePreset, extensions: null })));
+    await h.click('编辑预设'); assert.match(h.fieldValue('预设 JSON'), /"extensions":null/);
+    await h.field('预设名称', 'renamed.json'); await h.click('保存预设');
+    assert.match(h.text(), /下次生成生效/); assert.equal(h.saved.presets[0].name, 'renamed.json');
+    await h.field('预设 JSON', JSON.stringify(simplePreset)); await h.click('提示词');
+    assert.match(h.text(), /材料占位项/); await h.click('保存预设');
+    assert.equal(JSON.parse(decodePreset(h.saved.presets[0].data)).extensions, undefined);
+  } finally { h.destroy(); }
+});
 
 test('panel automatically recognizes SPreset and removes legacy mode controls and settings', async () => {
   const h = harness({ initialModel: { provider: 'own', model: 'story' }, initialSettings: { adapter: 'st' } });
@@ -165,7 +245,7 @@ test('client imports, exports, saves controls and directs generation to upstream
     await h.choose('插件正文模型', JSON.stringify({ provider: 'own', model: 'story' }));
     await h.choose('推理等级', 'high');
     assert.equal(h.disabled('重新生成最新正文'), undefined);
-    await h.click('导出原文件');
+    await h.click('导出预设');
     assert.equal(await h.downloads[0].blob.text(), source);
     assert.equal(h.numberInputs(), 0);
     assert.doesNotMatch(h.text(), /输出\s*token\s*上限|上下文预算|温度/);

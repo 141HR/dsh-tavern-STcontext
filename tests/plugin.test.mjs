@@ -107,6 +107,24 @@ test('prepared preset/model survive selection changes and removal until the next
   assert.equal(f.requests, 2);
 });
 
+test('saving an edited preset changes the next preparation but not an ongoing generation', async () => {
+  const f = fixture(); await importPreset(f);
+  const frozen = await f.prepare(), id = (await f.call('config')).activeId;
+  const base = await f.call('preset/read', { id });
+  const edited = JSON.parse(base.text);
+  edited.prompts.find(prompt => prompt.identifier === 'identity').content = 'EDITED PROMPT';
+  edited.extensions.regex_scripts[0].replaceString = 'YY';
+  const text = JSON.stringify(edited), upload = await f.call('upload/begin', { name: 'edited.json', operation: 'replace', presetId: id, revision: base.revision, size: text.length });
+  await f.call('upload/chunk', { ...upload, index: 0, text }); await f.call('upload/finish', upload);
+  const old = await f.generate(async request => {
+    assert.ok(!JSON.stringify(request.messages).includes('EDITED PROMPT')); return { text: 'X' };
+  }, frozen);
+  const next = await f.generate(async request => {
+    assert.ok(JSON.stringify(request.messages).includes('EDITED PROMPT')); return { text: 'X' };
+  }, await f.prepare());
+  assert.equal(old.text, 'XX'); assert.equal(next.text, 'YY');
+});
+
 test('invalid selection/materials fail before dispatch; model failure never returns a candidate', async () => {
   const f = fixture(); await importPreset(f);
   await f.call('settings', { model: null });

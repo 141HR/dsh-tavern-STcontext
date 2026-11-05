@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
+import { createPresetStore } from '../lib/store.mjs';
 
 // Reuse the host's development dependencies; the distributed plugin stays dependency-free.
 test('sidebar, overlay and native settings reach all content in short and narrow windows', {
@@ -27,6 +28,31 @@ test('sidebar, overlay and native settings reach all content in short and narrow
         const errors = [];
         page.on('pageerror', error => errors.push(error.message));
         try {
+          let data;
+          const store = createPresetStore({ readPluginData: async () => structuredClone(data), savePluginData: async input => { data = structuredClone(input.data); } });
+          const doc = { temperature: .75, top_p: .9, prompts: [
+            { identifier: 'main', name: '主提示词', role: 'system', content: '你是叙事助手。保持人物动机一致，沿用 {{user}} 的视角。' },
+            ...Array.from({ length: 10 }, (_, i) => ({ identifier: 'rule-' + i, name: '叙事规则 ' + (i + 1), role: 'system', content: '规则 ' + i })),
+            { identifier: 'chatHistory', marker: true, name: '聊天历史' },
+          ], notes: '保留扩展和未知字段', extensions: { regex_scripts: [{ scriptName: '清理输出', findRegex: '/X/g', replaceString: 'Y', placement: [2] }] } };
+          doc.prompt_order = [{ character_id: 100001, order: doc.prompts.map(prompt => ({ identifier: prompt.identifier, enabled: true })) }];
+          const text = JSON.stringify(doc), upload = store.begin({ name: '测试预设.json', size: text.length });
+          store.chunk({ id: upload.id, index: 0, text }); await store.finish(upload);
+          await store.settings({ model: { provider: 'own', model: 'story' } });
+          await page.exposeFunction('hostCall', async (name, input) => {
+            const method = name.replace('dsh-tavern-stcontext/', '');
+            if (method === 'config') {
+              const config = await store.list();
+              config.presets[0].report.warnings.push(...Array.from({ length: 25 }, (_, i) => `兼容提示 ${i + 1}：这是一条用于检查完整内容可达性的说明。`));
+              return { ...config, hostReady: true };
+            }
+            if (method === 'models') return { groups: [{ provider: 'own', providerName: 'Own', models: [{ id: 'story', name: 'Story' }] }] };
+            if (method === 'model-reasoning') return { efforts: [] };
+            if (method === 'request') return { createdAt: 1, report: (await store.list()).presets[0].report, total: 2, text: '{}' };
+            const routes = { 'preset/read': 'read', 'upload/begin': 'begin', 'upload/chunk': 'chunk', 'upload/finish': 'finish', 'upload/cancel': 'cancel', settings: 'settings', export: 'export', select: 'select', remove: 'remove' };
+            if (routes[method]) return store[routes[method]](input);
+            throw Error('Unexpected call: ' + method);
+          });
           await page.setContent(`<style>
             html,body{margin:0;height:100%;overflow:hidden;font:14px sans-serif}
             body{display:flex;flex-direction:column}header.fixture{height:56px;flex:none}
@@ -40,11 +66,6 @@ test('sidebar, overlay and native settings reach all content in short and narrow
           await page.evaluate(surface => {
             const { createElement: h } = modules.react;
             let panel, action, overlay, Settings;
-            const config = { hostReady: true, generationReady: true, activeId: 'preset',
-              settings: { model: { provider: 'own', model: 'story' } },
-              presets: [{ id: 'preset', name: '测试预设', digest: 'a'.repeat(64),
-                report: { enabledPrompts: 10, regexCount: 3, order: 100001, protocol: 'chat', blockers: [],
-                  warnings: Array.from({ length: 25 }, (_, i) => `兼容提示 ${i + 1}：这是一条用于检查完整内容可达性的说明。`) } }] };
             window.calls = [];
             plugin.apply({
               effect: run => run(),
@@ -53,20 +74,17 @@ test('sidebar, overlay and native settings reach all content in short and narrow
                 registerPanel: entry => { panel = entry; }, registerComposerAction: entry => { action = entry; },
                 openOverlay: entry => { overlay = entry; },
                 async callHost(name, input) {
-                  const method = name.split('/').at(-1); window.calls.push({ method, input });
-                  if (method === 'config') return config;
-                  if (method === 'models') return { groups: [{ provider: 'own', providerName: 'Own', models: [{ id: 'story', name: 'Story' }] }] };
-                  if (method === 'model-reasoning') return { efforts: [] };
-                  if (method === 'settings') { config.settings = input; return config; }
-                  if (method === 'request') return { createdAt: 1, report: config.presets[0].report, total: 2, text: '{}' };
-                  throw Error('Unexpected call: ' + method);
+                  const method = name.replace('dsh-tavern-stcontext/', ''); window.calls.push({ method, input });
+                  return window.hostCall(name, input);
                 },
               },
             });
             action.run({ gameId: 'game' });
             const element = surface === 'settings' ? h(Settings)
               : surface === 'overlay' ? overlay.render({ close() {} }) : panel.render({ gameId: 'game' });
-            modules['react-dom/client'].createRoot(document.querySelector('main')).render(element);
+            let root = modules['react-dom/client'].createRoot(document.querySelector('main'));
+            root.render(element);
+            window.remount = () => { root.unmount(); root = modules['react-dom/client'].createRoot(document.querySelector('main')); root.render(element); };
           }, surface);
           await page.waitForFunction(() => document.querySelector('.stc-header-status')?.textContent === '配置就绪');
           await page.getByText('兼容报告', { exact: false }).click();
@@ -89,6 +107,58 @@ test('sidebar, overlay and native settings reach all content in short and narrow
           await area.evaluate(element => { element.scrollTop = 0; });
           await page.getByRole('button', { name: '保存设置', exact: true }).click();
           await page.getByText('设置已保存', { exact: true }).waitFor();
+          await page.getByRole('button', { name: '编辑预设', exact: true }).click();
+          const editor = page.getByRole('region', { name: '预设编辑器' });
+          await editor.getByRole('textbox', { name: '提示词内容', exact: true }).fill('修改后的叙事规则 {{user}}');
+          await editor.getByRole('button', { name: '下移 主提示词', exact: true }).click();
+          await editor.getByRole('combobox', { name: '注入位置' }).selectOption('1');
+          await editor.getByRole('spinbutton', { name: '注入深度' }).fill('3');
+          await editor.getByRole('checkbox', { name: '重生成', exact: true }).check();
+          const editorMetrics = await area.evaluate(element => ({ width: element.clientWidth, scrollWidth: element.scrollWidth }));
+          assert.ok(editorMetrics.scrollWidth <= editorMetrics.width + 1, 'editor must not overflow horizontally');
+          if (process.env.STCONTEXT_SCREENSHOT_DIR && surface === 'settings') {
+            // Expand only for the artifact capture: an element taller than its
+            // scroll container would otherwise be clipped in the screenshot.
+            const height = await editor.evaluate(element => Math.ceil(element.getBoundingClientRect().height) + 180);
+            await page.setViewportSize({ width: viewport.width, height });
+            await editor.screenshot({ path: join(process.env.STCONTEXT_SCREENSHOT_DIR, `preset-editor-${viewport.width}.png`) });
+            await page.setViewportSize(viewport);
+          }
+          assert.equal(await editor.getByRole('tab', { name: '生成参数', exact: true }).count(), 0);
+          assert.equal(await editor.getByRole('spinbutton', { name: '温度', exact: true }).count(), 0);
+          await editor.getByRole('checkbox', { name: '合并相邻系统消息', exact: true }).check();
+          await editor.getByRole('tab', { name: '正则规则', exact: true }).click();
+          await editor.getByRole('textbox', { name: '替换文本', exact: true }).fill('ZZ');
+          await editor.getByRole('tab', { name: '完整 JSON', exact: true }).click();
+          const raw = editor.getByRole('textbox', { name: '预设 JSON', exact: true });
+          const draft = await raw.inputValue();
+          await raw.fill('{invalid'); await editor.getByRole('button', { name: '保存预设', exact: true }).click();
+          await editor.getByRole('alert').filter({ hasText: 'JSON 无效' }).waitFor();
+          assert.equal(await raw.inputValue(), '{invalid');
+          await raw.fill(draft); await editor.getByRole('button', { name: '保存预设', exact: true }).click();
+          await page.getByText('预设已保存，下次生成生效', { exact: true }).waitFor();
+          const savedDoc = (await store.active()).document;
+          assert.equal(savedDoc.prompts[0].content, '修改后的叙事规则 {{user}}');
+          assert.equal(savedDoc.prompts[0].injection_depth, 3);
+          assert.deepEqual(savedDoc.prompts[0].injection_trigger, ['regenerate']);
+          assert.equal(savedDoc.prompt_order[0].order[0].identifier, 'rule-0');
+          assert.equal(savedDoc.temperature, .75); assert.equal(savedDoc.top_p, .9); assert.equal(savedDoc.squash_system_messages, true);
+          assert.equal(savedDoc.extensions.regex_scripts[0].replaceString, 'ZZ');
+          assert.equal(savedDoc.notes, doc.notes);
+          const unsaved = JSON.stringify({ ...savedDoc, notes: '暂存草稿' });
+          await raw.fill(unsaved);
+          await page.evaluate(() => window.remount());
+          await editor.getByRole('textbox', { name: '预设 JSON', exact: true }).waitFor();
+          assert.equal(await raw.inputValue(), unsaved, 'draft survives host panel unmount');
+          await editor.getByRole('button', { name: '关闭编辑器', exact: true }).click();
+          await page.getByRole('button', { name: '继续编辑', exact: true }).click();
+          assert.equal(await raw.inputValue(), unsaved);
+          await editor.getByRole('button', { name: '关闭编辑器', exact: true }).click();
+          await page.getByRole('button', { name: '放弃更改并继续', exact: true }).click();
+          assert.equal((await store.active()).document.notes, doc.notes);
+          await page.evaluate(() => window.remount());
+          await page.getByRole('button', { name: '编辑预设', exact: true }).waitFor();
+          assert.equal(await page.getByRole('region', { name: '预设编辑器' }).count(), 0, 'discarded draft must not be restored');
           if (surface === 'settings') {
             assert.equal(await page.getByRole('button', { name: '重新生成最新正文' }).count(), 0);
             assert.equal(await page.evaluate(() => calls.some(call => ['status', 'start', 'cancel', 'request'].includes(call.method))), false);

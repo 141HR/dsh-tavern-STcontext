@@ -1,13 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createPresetStore, encodePreset, decodePreset } from '../lib/store.mjs';
+import { randomBytes } from 'node:crypto';
 const document = { prompts: [{ identifier: 'chatHistory', marker: true }], prompt_order: [{ character_id: 100001, order: [{ identifier: 'chatHistory', enabled: true }] }] };
 function fakeTavern() {
   let data;
   return { readPluginData: async () => structuredClone(data), savePluginData: async input => { data = structuredClone(input.data); } };
 }
-async function upload(store, text, name = 'preset.json') {
-  const { id } = store.begin({ name, size: text.length });
+async function upload(store, text, name = 'preset.json', options = {}) {
+  const { id } = store.begin({ name, size: text.length, ...options });
   for (let index = 0, offset = 0; offset < text.length; index++, offset += 50000) store.chunk({ id, index, text: text.slice(offset, offset + 50000) });
   return store.finish({ id });
 }
@@ -21,6 +22,90 @@ test('large JSON is chunked, persisted compressed and exported byte-for-byte', a
   assert.equal((await store.active()).document.notes.length, 240000);
   assert.ok(Buffer.byteLength(JSON.stringify(await tavern.readPluginData())) < 256 * 1024);
   assert.equal((await createPresetStore(tavern).list()).activeId, imported.activeId);
+});
+
+test('editing persists identity, revision, extensions and all order groups; copies stay independent', async () => {
+  const tavern = fakeTavern(), store = createPresetStore(tavern);
+  const original = { ...document, prompt_order: [...document.prompt_order, { character_id: 100000, order: [] }],
+    extensions: { unknown: { code: 'throw Error("never execute")', value: [1, 2] } } };
+  const source = JSON.stringify(original), imported = await upload(store, source), id = imported.activeId;
+  const first = await store.read({ id });
+  assert.equal(first.text, source);
+  const edited = { ...original, temperature: 0.8 }, changedText = JSON.stringify(edited);
+  const options = { operation: 'replace', presetId: id, revision: first.revision };
+  const saved = await upload(store, changedText, 'edited.json', options);
+  assert.equal(saved.activeId, id);
+  assert.equal(saved.presets.length, 1);
+  assert.notEqual(saved.presets[0].revision, first.revision);
+  assert.notEqual(saved.presets[0].digest, first.digest);
+  assert.deepEqual((await createPresetStore(tavern).active()).document, edited);
+  assert.equal((await store.export({ id })).text, changedText);
+  const beforeCopy = await store.export({ id });
+  // A stale draft can be rescued as a copy, but cannot overwrite the original.
+  const copied = await upload(store, source, 'copy.json', { ...options, operation: 'copy' });
+  assert.notEqual(copied.activeId, id);
+  assert.equal(copied.presets.length, 2);
+  assert.deepEqual(await store.export({ id }), beforeCopy);
+  // If the original bytes are reimported, never overwrite the edited ID.
+  await store.remove({ id: copied.activeId });
+  const reimported = await upload(store, source);
+  assert.notEqual(reimported.activeId, id);
+  assert.deepEqual(await store.export({ id }), beforeCopy);
+});
+
+test('stale edits, invalid JSON, quota errors and deleted targets leave saved data unchanged', async () => {
+  const tavern = fakeTavern(), store = createPresetStore(tavern);
+  const imported = await upload(store, JSON.stringify(document)), id = imported.activeId;
+  const options = { operation: 'replace', presetId: id, revision: imported.presets[0].revision };
+  const before = await tavern.readPluginData();
+  const invalids = ['{broken', JSON.stringify({ ...document, temperature: -1 }),
+    JSON.stringify({ ...document, prompt_order: [...document.prompt_order, { character_id: 100000, order: [{ identifier: 'missing' }] }] }),
+    JSON.stringify({ ...document, extensions: { regex_scripts: [{ findRegex: '/[/' }] } })];
+  for (const source of invalids) {
+    await assert.rejects(upload(store, source, 'edited.json', options));
+    assert.deepEqual(await tavern.readPluginData(), before);
+  }
+  await assert.rejects(upload(store, JSON.stringify({ ...document, notes: randomBytes(300000).toString('base64') }), 'large.json', options), /存储上限/);
+  assert.deepEqual(await tavern.readPluginData(), before);
+  await upload(store, JSON.stringify(document), 'renamed.json', options);
+  const renamed = await tavern.readPluginData();
+  await assert.rejects(upload(store, JSON.stringify(document), 'stale.json', options), /其他窗口修改/);
+  await assert.rejects(store.read({ id, offset: 0, revision: options.revision }), /已修改/);
+  assert.deepEqual(await tavern.readPluginData(), renamed);
+  await store.remove({ id });
+  await assert.rejects(upload(store, JSON.stringify(document), 'deleted.json', options), /已被移除/);
+  assert.equal((await store.list()).presets.length, 0);
+});
+
+test('draft validation is read-only; cancellation and expiration release upload slots', async () => {
+  let time = 0;
+  const tavern = fakeTavern(), store = createPresetStore(tavern, () => time);
+  const imported = await upload(store, JSON.stringify(document)), id = imported.activeId;
+  const before = await tavern.readPluginData();
+  const text = JSON.stringify({ ...document, notes: '草稿'.repeat(60000) });
+  const options = { operation: 'validate', presetId: id, revision: imported.presets[0].revision };
+  const result = await upload(store, text, 'draft.json', options);
+  assert.equal(result.report.validation, 'static');
+  assert.deepEqual(await tavern.readPluginData(), before);
+  const pending = store.begin({ name: 'draft.json', size: text.length, ...options });
+  store.cancel(pending);
+  assert.throws(() => store.chunk({ id: pending.id, index: 0, text: text.slice(0, 100) }), /失效/);
+  const expired = store.begin({ name: 'expired.json', size: 2 });
+  store.chunk({ id: expired.id, index: 0, text: '{}' }); time += 300001;
+  await assert.rejects(store.finish(expired), /失效/);
+  assert.deepEqual(await tavern.readPluginData(), before);
+});
+
+test('legacy records without revision can be edited and chunked reads preserve Unicode', async () => {
+  const tavern = fakeTavern(), store = createPresetStore(tavern);
+  const source = JSON.stringify({ ...document, notes: '😊汉字'.repeat(40000) });
+  const imported = await upload(store, source), id = imported.activeId;
+  const legacy = await tavern.readPluginData(); delete legacy.presets[0].revision; await tavern.savePluginData({ data: legacy });
+  let offset = 0, text = '', info;
+  do { info = await store.read({ id, offset, revision: imported.presets[0].digest }); text += info.text; offset += info.text.length; } while (offset < info.total);
+  assert.equal(text, source);
+  await upload(store, source, 'renamed.json', { operation: 'replace', presetId: id, revision: info.revision });
+  assert.equal((await store.active()).name, 'renamed.json');
 });
 test('incomplete/out-of-order uploads never replace the active preset', async () => {
   const store = createPresetStore(fakeTavern());
