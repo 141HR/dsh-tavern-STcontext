@@ -20,7 +20,8 @@ function fixture(capability = 1, apiVersion = 7) {
       async *stream(request) {
         requests++;
         const response = await respond(request);
-        yield { type: 'text-delta', index: 0, text: response.text };
+        if (response.text !== undefined) yield { type: 'text-delta', index: 0, text: response.text };
+        for (const [index, call] of (response.toolCalls || []).entries()) yield { type: 'block-end', index: index + 1, block: { type: 'tool-call', ...call } };
         yield { type: 'finish', reason: { kind: 'stop' } };
       } };
   } };
@@ -124,4 +125,70 @@ test('cancellation before compilation or after a late model response cannot retu
   assert.equal(f.requests, 0);
   const late = new AbortController();
   await assert.rejects(f.generate(async () => { late.abort(new Error('stopped late')); return { text: 'X' }; }, config, materials, late.signal), /stopped late/);
+});
+
+test('SPreset pipeline uses frozen hooks, previews the exact request, and returns a tool body after one regex pass', async () => {
+  const f = fixture(), document = structuredClone(preset);
+  document.extensions.SPreset = {
+    ToolBindings: { identity: { enabled: true, editorMode: 'form', form: { name: 'story', description: '正文', parameters: [{ name: 'text', type: 'string', required: true }] } } },
+    FinalRequestProcessing: { enabled: true, script: '({request}) => { request.messages[0].content += "\\nnonce=" + Math.random(); return request; }' },
+    OutputPreprocessing: { consumeToolCalls: true, toolCallFormatter: { enabled: true, script: '({calls}) => "<body>" + calls[0].arguments.text + "</body>"' } },
+  };
+  await importPreset(f, document);
+  const config = await f.prepare();
+  document.extensions.SPreset.OutputPreprocessing.toolCallFormatter.script = '() => "changed"';
+  await importPreset(f, document);
+  let sent;
+  const output = await f.generate(async request => { sent = request; return { toolCalls: [{ id: 'one', name: 'story', arguments: { text: 'X' } }] }; }, config);
+  assert.equal(output.text, '<body>XX</body>');
+  assert.equal(f.requests, 1);
+  const preview = JSON.parse((await f.call('request', { gameId: 'test' })).text);
+  assert.deepEqual(preview.request.messages, sent.messages.map(m => ({ role: m.role, content: m.content[0].text })));
+  assert.deepEqual(preview.request.tools, sent.tools);
+});
+
+test('SPreset failed scripts, lost materials and expanded request budgets never reach the model', async () => {
+  for (const script of ['() => { throw Error("hook failure"); }',
+    '({request}) => {request.messages=[{role:"user",content:"lost"}]; return request;}',
+    '({request}) => {request.messages[0].content += "x".repeat(500000); return request;}']) {
+    const f = fixture(), document = structuredClone(preset);
+    document.extensions.SPreset = { FinalRequestProcessing: { enabled: true, script } };
+    await importPreset(f, document);
+    const config = await f.prepare();
+    await assert.rejects(f.generate(() => assert.fail('no model dispatch'), config), /hook failure|完整历史保护|超过模型窗口/);
+    assert.equal(f.requests, 0);
+  }
+});
+
+test('helper request/response interception survives the real worker boundary and frozen configuration', async () => {
+  const f = fixture(), document = structuredClone(preset);
+  document.extensions.tavern_helper = { scripts: [{ enabled: true, name: 'generic transport', content: `(() => {
+    const original = fetch;
+    fetch = async (url, options) => {
+      const data = JSON.parse(options.body), name = 'body_' + Math.floor(Math.random()*1000000);
+      data.tools = [{type:'function', function:{name,description:data.messages.map(m=>m.content).join('\\n'),parameters:{type:'object'}}}];
+      data.messages = [{role:'user',content:'return body'}];
+      const response = await original(url, {...options,body:JSON.stringify(data)});
+      const json = await response.json(), msg = json.choices[0].message;
+      if (msg.tool_calls[0].function.name !== name) throw Error('request context changed');
+      msg.content = JSON.parse(msg.tool_calls[0].function.arguments).body;
+      delete msg.tool_calls;
+      return new Response(JSON.stringify(json));
+    };
+  })();` }] };
+  await importPreset(f, document);
+  const config = await f.prepare();
+  await importPreset(f, preset);
+  const result = await f.generate(async request => {
+    assert.equal(request.tools.length, 1);
+    assert.ok(request.tools[0].description.includes('完整历史正文 {{不要再次展开}}'));
+    assert.doesNotMatch(JSON.stringify(request), /STCONTEXT_MATERIAL_/);
+    return { toolCalls: [{ name: request.tools[0].name, arguments: '{"body":"X"}' }] };
+  }, config);
+  assert.equal(result.text, 'XX');
+  assert.equal(f.requests, 1);
+  const preview = await f.call('request', { gameId: 'test' });
+  assert.equal(preview.report.protocol, 'spreset');
+  assert.ok(JSON.parse(preview.text).request.tools[0].name.startsWith('body_'));
+  assert.ok(!preview.text.includes('helperState'));
 });

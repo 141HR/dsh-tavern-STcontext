@@ -1,0 +1,193 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { compilePreset, inspectPreset, processOutput } from '../lib/preset.mjs';
+import { compilerMaterials } from '../lib/materials.mjs';
+import { runCompiler } from '../lib/worker-client.mjs';
+import { materials, preset } from './fixtures/materials.mjs';
+
+const settings = { model: { provider: 'fixture', model: 'story' } };
+const doc = (...scripts) => ({ ...structuredClone(preset), extensions: { ...structuredClone(preset.extensions),
+  tavern_helper: { scripts: scripts.map((content, i) => ({ id: 'id-' + i, name: 'arbitrary-' + i, enabled: true, content })) } } });
+const compile = document => compilePreset(document, compilerMaterials(materials), settings);
+const output = (document, compiled, response) => processOutput({ document, helperState: compiled.helperState,
+  toolNames: (compiled.request.tools || []).map(t => t.name), response });
+
+// A synthetic legacy browser interceptor independent of either user's preset.
+const interceptor = `(() => {
+  const original = window.parent.fetch;
+  window.parent.fetch = async (url, init) => {
+    const request = JSON.parse(init.body);
+    const bytes = new Uint8Array(4); crypto.getRandomValues(bytes);
+    const name = 'story_' + Array.from(bytes).join('_');
+    request.tools = [{type:'function',function:{name,description:request.messages.map(m=>m.content).join('\\n'),parameters:{type:'object',properties:{body:{type:'string'}},required:['body']}}}];
+    request.messages = [{role:'user',content:'reply'}];
+    const response = await original(url, {...init,body:JSON.stringify(request)});
+    const data = await response.clone().json();
+    const message = data.choices[0].message;
+    if (message.tool_calls?.length) {
+      if (message.tool_calls[0].function.name !== name) throw Error('lost request state');
+      message.content = JSON.parse(message.tool_calls[0].function.arguments).body;
+      delete message.tool_calls;
+    }
+    return new Response(JSON.stringify(data), {headers:{'content-type':'application/json'}});
+  };
+})();`;
+
+test('arbitrary helper fetch interceptors share one SPreset pipeline and preserve response state', () => {
+  const document = doc(interceptor), compiled = compile(document);
+  assert.equal(compiled.report.protocol, 'spreset');
+  assert.ok(compiled.helperState);
+  for (const value of materials.history.map(row => row.text)) assert.ok(compiled.request.tools[0].description.includes(value));
+  assert.doesNotMatch(JSON.stringify(compiled.request), /STCONTEXT_MATERIAL_/);
+  const name = compiled.request.tools[0].name;
+  assert.equal(output(document, compiled, { toolCalls: [{ name, arguments: '{"body":"中文😀X"}' }] }).text, '中文😀XX');
+  assert.equal(output(document, compiled, { text: '直接X' }).text, '直接XX');
+  assert.throws(() => output(document, compiled, { toolCalls: [{ name, arguments: '{' }] }), /JSON/);
+  assert.throws(() => output(document, compiled, { toolCalls: [{ name: 'undeclared', arguments: '{}' }] }), /未声明/);
+  const changed = structuredClone(document); changed.prompts[1].content += 'changed';
+  assert.throws(() => output(changed, compiled, { text: 'X' }), /冻结状态/);
+  const altered = structuredClone(compiled); altered.helperState.expected += ' ';
+  assert.throws(() => output(document, altered, { text: 'X' }), /重放不一致/);
+  assert.throws(() => processOutput({ document, response: { text: 'X' } }), /冻结的编译状态/);
+});
+
+test('Tavern Helper events support deduplication, first/last, once, stop and async handlers', () => {
+  const document = doc(`
+    const e = tavern_events.CHAT_COMPLETION_SETTINGS_READY;
+    const log = [];
+    const first = () => log.push('A');
+    eventOn(e, first); eventOn(e, first);
+    eventMakeFirst(e, () => log.push('B'));
+    eventOnce(e, () => log.push('C'));
+    eventOn(e, () => { throw Error('stopped'); }).stop();
+    eventMakeLast(e, async request => { await Promise.resolve(); request.messages.push({role:'system',content:log.join('')}); });
+  `);
+  assert.equal(compile(document).request.messages.at(-1).content, 'BAC');
+});
+
+test('helper macro registration resolves deferred preset macros without touching frozen text', () => {
+  const document = doc(`registerMacroLike(/{{custom}}/g, (context, text) => context.role + ':' + getScriptId());`);
+  document.prompts[1].content = '{{custom}}';
+  const compiled = compile(document);
+  assert.ok(compiled.request.messages.some(m => m.content === 'system:id-0'));
+  for (const row of materials.history) assert.ok(JSON.stringify(compiled.request).includes(row.text));
+  document.extensions.tavern_helper.scripts[0].content = 'console.info("no macro registered")';
+  assert.throws(() => compile(document), /未解析预设宏/);
+  document.prompts[1].content = '{{\ncustom\n}}';
+  assert.throws(() => compile(document), /未解析预设宏/);
+});
+
+test('script scoped variables, ready callbacks and global aliases are temporary and isolated', () => {
+  const document = doc(`$(() => {
+    if (window !== globalThis || parent !== window || window.top !== window) throw Error('aliases');
+    replaceVariables({value:'one'}, {type:'script'});
+    eventOn(tavern_events.CHAT_COMPLETION_SETTINGS_READY, request => {
+      request.messages.push({role:'system',content:getScriptId() + ':' + getVariables({type:'script'}).value});
+    });
+  });`, `replaceVariables({value:'two'}, {type:'script'});`);
+  for (let i = 0; i < 2; i++) assert.equal(compile(document).request.messages.at(-1).content, 'id-0:one');
+});
+
+test('network, DOM loaders, nested generation and host mutations are denied even if caught', () => {
+  for (const source of [
+    'fetch("https://example.invalid").catch(()=>{});',
+    'try {document.createElement("script")} catch {}',
+    'try {generate({})} catch {}', 'try {setChatMessages([])} catch {}',
+    'try {setTimeout(()=>{},0)} catch {}',
+    'eventOn(tavern_events.CHAT_COMPLETION_SETTINGS_READY, async () => {try {await fetch("/api/backends/chat-completions/generate", {method:"POST",body:"{}"})} catch {}});',
+    `const original=fetch; fetch=(url,init)=>original('https://example.invalid',init);`,
+    `const original=fetch; fetch=(url,init)=>original(url,{...init,headers:{Authorization:'secret'}});`,
+  ]) assert.throws(() => compile(doc(source)), /受限助手环境/);
+});
+
+test('helper transformations cannot erase host materials or modify frozen sampling/model', () => {
+  for (const body of ['r.messages=[]', 'r.model="other"', 'r.max_tokens=1', 'r.temperature=0', 'r.tool_choice="required"']) {
+    assert.throws(() => compile(doc(`eventOn(tavern_events.CHAT_COMPLETION_SETTINGS_READY,r=>{${body}});`)), /完整|冻结|强制工具/);
+  }
+  assert.throws(() => compile(doc('while(true){}')), /超时/);
+});
+
+test('event-only tool declarations still need an output formatter before a model dispatch', () => {
+  assert.throws(() => compile(doc(`eventOn(tavern_events.CHAT_COMPLETION_SETTINGS_READY, r => {
+    r.tools=[{type:'function',function:{name:'body',description:'body',parameters:{type:'object'}}}];
+  });`)), /toolCallFormatter/);
+});
+
+test('helper workers remain cancellable before any model dispatch', async () => {
+  const controller = new AbortController();
+  const pending = runCompiler('compile', { document: doc('while(true){}'), materials: compilerMaterials(materials) }, { signal: controller.signal });
+  setTimeout(() => controller.abort(new Error('用户取消助手脚本')), 60);
+  await assert.rejects(pending, /用户取消助手脚本/);
+});
+
+test('helper globals cannot escape WASM or pollute the next generation', () => {
+  const document = doc(`
+    if (({}).constructor.constructor('return typeof process')() !== 'undefined') throw Error('escape');
+    if (Object.prototype.helperPolluted) throw Error('previous runtime leaked');
+    Object.prototype.helperPolluted = true;
+  `);
+  compile(document); compile(document);
+  assert.equal(Object.prototype.helperPolluted, undefined);
+  assert.throws(() => compile(doc('const buffer = new ArrayBuffer(100 * 1024 * 1024);')), /memory|内存|alloc/i);
+});
+
+test('buffered helper responses preserve UTF-8 across stream chunk boundaries', () => {
+  const document = doc(`
+    const original=fetch;
+    fetch=async (...args)=>{
+      const response=await original(...args), bytes=new TextEncoder().encode(await response.text());
+      return new Response(new ReadableStream({start(c){for(const b of bytes)c.enqueue(new Uint8Array([b]));c.close()}}));
+    };
+  `);
+  const compiled = compile(document);
+  assert.equal(output(document, compiled, { text: '中文😀X' }).text, '中文😀XX');
+});
+
+test('read-only helper snapshots follow ordered preset and visible chat API shapes', () => {
+  const document = doc(`
+    const snapshot = getPreset('in_use');
+    if (snapshot.prompts[0].id !== 'identity' || !snapshot.prompts[0].enabled || !Array.isArray(snapshot.prompts_unused)) throw Error('preset shape');
+    if (snapshot.settings.max_completion_tokens !== 8192) throw Error('settings shape');
+    const messages = getChatMessages('0-{{lastMessageId}}', {role:'user'});
+    if (messages.length !== 2 || messages.some(m=>m.is_hidden || !m.name || !m.data || !m.extra)) throw Error('chat shape');
+    if (getChatMessages(-1)[0].message !== '本轮已处理输入') throw Error('current input');
+    if (getChatMessages('0-100', {hide_state:'hidden'}).length) throw Error('hidden data');
+    snapshot.prompts[0].content='mutated'; messages[0].message='mutated';
+  `);
+  const compiled = compile(document);
+  assert.ok(compiled.request.messages.some(m => m.content.includes('测试角色与测试玩家')));
+  assert.ok(compiled.request.messages.some(m => m.content === '历史玩家输入'));
+  for (const source of ['getPreset("other")', 'getChatMessages(0,{include_swipes:true})']) assert.throws(() => compile(doc(source)), /受限助手环境/);
+});
+
+test('original Kunlun script works under a different name and fingerprint without an adapter', { skip: !process.env.STCONTEXT_PRESET_FIXTURE }, async () => {
+  const document = JSON.parse(await readFile(process.env.STCONTEXT_PRESET_FIXTURE, 'utf8'));
+  for (const script of document.extensions.tavern_helper.scripts) if (script.enabled) {
+    script.name = 'unrelated-name'; script.content += '\n// Different fingerprint, same script contract.\n';
+  }
+  const data = compilerMaterials(materials);
+  data.history.push({ role: 'assistant', text: '  {{target_length}} 【ToolCall引导】 <历史记录>\n原样保留  ' });
+  data.input.projected = '  中文😀\n最后输入  ';
+  const compiled = compilePreset(document, data, settings);
+  assert.equal(compiled.report.protocol, 'spreset');
+  assert.ok(compiled.request.tools[0].description.includes(data.history.at(-1).text));
+  assert.ok(compiled.request.tools[0].description.includes(data.input.projected));
+  const name = compiled.request.tools[0].name;
+  assert.equal(output(document, compiled, { toolCalls: [{ name, arguments: '{"buffer_content":"正文"}' }] }).text, '正文');
+});
+
+test('Meowssiah bootstrap compiles original tool history, required choice and signatures through generic SPreset', { skip: !process.env.STCONTEXT_COMPAT_FIXTURE }, async () => {
+  const document = JSON.parse(await readFile(process.env.STCONTEXT_COMPAT_FIXTURE, 'utf8'));
+  const report = inspectPreset(document);
+  assert.equal(report.protocol, 'spreset');
+  assert.ok(report.scripts.some(s => s.builtin));
+  assert.equal(report.blockers.length, 0);
+  const compiled = compile(document);
+  assert.equal(compiled.request.toolChoice, 'required');
+  assert.equal(compiled.request.toolConfig.functionCallingConfig.mode, 'ANY');
+  assert.equal(compiled.request.messages.filter(m => m.role === 'tool').length, 2);
+  assert.equal(compiled.request.messages.flatMap(m => m.tool_calls || []).length, 2);
+  assert.ok(compiled.request.messages.filter(m => m.tool_calls).every(m => m.tool_calls[0].signature === 'skip_thought_signature_validator'));
+  assert.ok(output(document, compiled, { toolCalls: [{ name: 'soliumbra_reply', arguments: '{"game_content":"测试正文"}' }] }).text.includes('测试正文'));
+});

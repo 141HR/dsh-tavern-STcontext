@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { parsePreset, compilePreset, processOutput, inspectPreset } from '../lib/preset.mjs';
 import { createMacroEnvironment, renderMacros } from '../lib/macros.mjs';
-import { decodeResponse } from '../lib/kunlun.mjs';
 import { runCompiler } from '../lib/worker-client.mjs';
 
 function preset(extra = {}) {
@@ -82,9 +81,8 @@ test('output replacement supports whole/numeric/named captures and trimStrings',
 test('empty processed result and malformed tool arguments cannot replace a body', () => {
   const doc = preset(); doc.extensions.regex_scripts = [rule('/.*/g', '')];
   assert.throws(() => processOutput({ document: doc, response: { text: '原文' } }), /正文为空/);
-  assert.throws(() => decodeResponse({ toolCalls: [{ name: 'tool', arguments: '{"buffer_content":"unfinished' }] }, 'tool'), /完整 JSON/);
-  assert.throws(() => decodeResponse({ toolCalls: [{ name: 'other', arguments: {} }] }, 'tool'), /未声明/);
-  assert.equal(decodeResponse({ text: '短', toolCalls: [{ name: 'tool', arguments: { buffer_content: '完整正文' } }] }, 'tool'), '完整正文');
+  assert.throws(() => processOutput({ document: doc, toolNames: ['tool'], response: { toolCalls: [{ name: 'tool', arguments: '{"body":"unfinished' }] } }), /JSON/);
+  assert.throws(() => processOutput({ document: doc, toolNames: ['tool'], response: { toolCalls: [{ name: 'other', arguments: {} }] } }), /未声明/);
 });
 test('macro environment is local and unsupported expressions are not executed', () => {
   const env = createMacroEnvironment({ userName: '甲', random: () => 0 });
@@ -92,10 +90,12 @@ test('macro environment is local and unsupported expressions are not executed', 
   assert.equal(renderMacros('{{getvar::x}}', createMacroEnvironment()), '');
   assert.throws(() => renderMacros('{{process.exit()}}', env), /不支持的宏/);
 });
-test('unknown enabled scripts block auto mode and require an explicit standard mode', () => {
+test('helper scripts are diagnosed statically and execute only inside the restricted compiler', () => {
   const doc = preset(); doc.extensions.tavern_helper = { scripts: [{ enabled: true, name: 'unknown', content: 'throw new Error("not executed")' }] };
-  assert.throws(() => compilePreset(doc, materials()), /尚未适配/);
-  assert.equal(compilePreset(doc, materials(), { adapter: 'st' }).report.protocol, 'st');
+  const report = inspectPreset(doc);
+  assert.equal(report.protocol, 'spreset');
+  assert.ok(report.warnings.some(text => text.includes('受限助手环境')));
+  assert.throws(() => compilePreset(doc, materials()), /not executed/);
 });
 test('bounded worker cancels pathological output regex without blocking the host', async () => {
   const doc = preset(); doc.extensions.regex_scripts = [rule('/^(a+)+$/', '')];
@@ -107,14 +107,15 @@ test('imported user fixture compiles without embedding its JSON in the plugin', 
   const doc = parsePreset(await readFile(process.env.STCONTEXT_PRESET_FIXTURE, 'utf8'));
   const history = Array.from({ length: 90 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', text: '  fixture-row-' + i + ' 完整历史 {{target_length}} 【HISTORICAL_USER_INPUT】  ' }));
   const result = await runCompiler('compile', { document: doc, materials: materials(history) });
-  assert.equal(result.report.order, 100001); assert.equal(result.report.protocol, 'kunlun-ide');
+  assert.equal(result.report.order, 100001); assert.equal(result.report.protocol, 'spreset');
   assert.deepEqual(result.request.messages.map(message => message.role), ['system', 'user', 'assistant', 'user']);
   assert.equal(result.request.tools.length, 1);
   for (const row of history) assert.ok(result.request.tools[0].description.includes(row.text), row.text);
   assert.ok(result.request.tools[0].description.includes('本轮输入'));
   assert.ok(result.request.tools[0].description.includes('起点状态'));
   assert.doesNotMatch(JSON.stringify(result.request), /"content":"[^"]*\{\{(?:target_length|perspective_rules|current_chapter_file)\}\}/);
-  const processed = await runCompiler('output', { document: doc, response: { toolCalls: [{ name: result.toolName, arguments: JSON.stringify({ buffer_content: '<talk>过程</talk><content><hidden>极其平静的正文</hidden></content>' }) }] }, toolName: result.toolName });
+  const toolNames = result.request.tools.map(t => t.name);
+  const processed = await runCompiler('output', { document: doc, response: { toolCalls: [{ name: toolNames[0], arguments: JSON.stringify({ buffer_content: '<talk>过程</talk><content><hidden>极其平静的正文</hidden></content>' }) }] }, helperState: result.helperState, toolNames });
   assert.equal(processed.text, '平静的正文</content>');
   assert.equal(processed.metadata.outputRegexPasses, 1);
 });

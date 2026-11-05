@@ -1,6 +1,6 @@
 {
   "name": "dsh-tavern-STcontext",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "description": "导入 SillyTavern 预设，使用完整可见历史生成或重生成正文。",
@@ -9,7 +9,8 @@
     "./client": "./client.js"
   },
   "scripts": {
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --test tests/*.test.mjs",
+    "build:runtime": "node scripts/build-runtime.mjs"
   },
   "engines": {
     "node": ">=22.19.0"
@@ -21,5 +22,11 @@
         "dsh-tavern-plugin"
       ]
     }
+  },
+  "devDependencies": {
+    "@jitl/quickjs-wasmfile-release-sync": "0.32.0",
+    "acorn": "8.19.0",
+    "esbuild": "0.28.2",
+    "quickjs-emscripten-core": "0.32.0"
   }
 }

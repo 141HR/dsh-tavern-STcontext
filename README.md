@@ -19,11 +19,11 @@
 
 当前自动生成接口只支持文本输入；本轮带附件时会明确报错，不会忽略附件继续生成。
 
-模型请求由插件直接使用 DSH 的 `llm` 服务发送；需要 DSH 0.2.1 的 `prepareCall`、`listProviders`、`listModels` 接口，可选复用 `tokenMeter`。在 STcontext 面板独立选择服务商下的文本模型及其支持的推理强度，模型服务和凭据沿用 DSH 已配置的服务商。插件保存自己的选择，正文生成和重生成均使用该模型，不随前台或后台模型切换。插件负责预算检查、取消和响应校验，宿主负责正文生命周期和结算。
+模型选择与预算使用 DSH 0.2.1 的 `llm.prepareCall`、`listProviders`、`listModels`，可选复用 `tokenMeter`。普通请求由 DSH 发送；强制工具选择或签名请求使用插件内的兼容发送接口，还需要公开的 `listConfigurableProviders`、`settings.describe` 和 API Key 凭据解析服务。在 STcontext 面板独立选择服务商下的文本模型及其支持的推理强度，模型地址和凭据沿用 DSH 已配置的服务商。插件保存自己的选择，正文生成和重生成均使用该模型，不随前台或后台模型切换。插件负责预算检查、取消和响应校验，宿主负责正文生命周期和结算。
 
 从 0.2.x 升级后，原有的前台/后台跟随设置需要在面板重新选择并保存。没有选择模型时不会发送正文请求；已选模型不可用时直接报错，不自动切换。模型列表可单独刷新；个别服务商读取失败不会影响其他服务商的模型选择。
 
-插件没有额外第三方依赖，不需要 `npm install` 或构建，也不需要安装 SillyTavern。
+运行包已包含固定版本的 QuickJS/WASM 与 JavaScript 语法解析器（`lib/vendor/`），使用时不需要 `npm install` 或构建，也不需要安装 SillyTavern。复制或打包时必须包含整个 `lib/`，包括 `.wasm` 文件和许可声明。
 
 本地目录安装：在 PowerShell 中进入本插件目录，执行以下命令，将运行文件复制到 Tavern 用户插件目录。设置过 `DSH_HOME` 时应使用实际启动 Tavern 的同一个值；以下命令以 Desktop 默认目录 `%USERPROFILE%\.dsh` 为例；CLI 默认使用 `%USERPROFILE%\.dsh-tavern`，使用 CLI 时应将根目录改成该路径。
 
@@ -44,7 +44,7 @@ Copy-Item -LiteralPath '.\lib' -Destination $stcontextTarget -Recurse -Force
 在 DeepSeek Harness「设置 → STcontext」可直接导入预设、选择模型并保存，无需先打开游戏。需要调整生成设置或查看本次请求时，在游戏中通过侧栏「＋ → STcontext」或输入框上方的「STcontext」打开面板：
 
 1. 导入预设 JSON，查看兼容报告；预设不会编译进源码。
-2. 选择预设和「插件正文模型」，按需设置「推理等级」，点击「保存设置」；请求模式位于「预设适配」中。等级按所选模型的详细能力加载；没有可选等级时显示「模型默认」并禁用选择，不发送额外的推理等级参数。切换模型会清除旧模型的等级设置，读取失败时可通过「刷新模型列表」重试。
+2. 选择预设和「插件正文模型」，按需设置「推理等级」，点击「保存设置」。所有预设统一使用 SPreset 流程，自动处理 ST 基础配置、SPreset 扩展和受限酒馆助手脚本，不需要选择请求模式。等级按所选模型的详细能力加载；没有可选等级时显示「模型默认」并禁用选择，不发送额外的推理等级参数。切换模型会清除旧模型的等级设置，读取失败时可通过「刷新模型列表」重试。
 3. 保存设置并在宿主剧情设置中选定 STcontext 后，使用宿主的发送、重生成、失败重试和停止按钮。正文提交后继续完成主会话同步和结算，此时停止不会撤销正文。
 4. 可查看或下载本次实际请求。新正文提交后结算失败时，通过宿主重试结算；不会撤掉已提交正文。
 
@@ -55,14 +55,28 @@ Copy-Item -LiteralPath '.\lib' -Destination $stcontextTarget -Recurse -Force
 ## 兼容范围
 
 - ST 聊天补全的 100001 顺序、启用项、角色、材料 marker 和深度提示词。上游 `reason=normal` 使用 `normal`，`regenerate/retry` 使用 `regenerate`；非空 `injection_trigger` 必须包含当前类型才生效。
-- 局部 setvar/getvar、基本变量操作、user/char、注释、random/roll；未知宏明确报错。
+- 局部 setvar/getvar、基本变量操作、user/char、注释、random/roll、嵌套宏，以及 lastUserMessage/lastCharMessage/lastMessage/lastMessageId。聊天宏只读取本次冻结的可见历史与输入；替换进去的文本不会再次执行宏。全局变量宏也只在本次编译内共享，不读写宿主状态。
 - 原生 `extensions.regex_scripts`；SPreset RegexBinding 只保留原数据，不重复执行。
-- 识别昆仑 IDE 1.2r 已适配的请求改写脚本，将其模板作为数据解析。没有全局 fetch 钩子，也不执行导入的 JavaScript。修改脚本版本后须重新适配；标准 ST 模式可以明确忽略脚本行为。
-- 工具描述承载上下文、buffer_content 结果解析由私有适配器完成。模板和正文规范来自用户导入的 JSON，仓库不附带预设。
+- 只有 SPreset 一条执行路径：ST 基础组装 → 可选的 SPreset 处理函数 → 受限助手事件与请求拦截 → 模型调用 → 助手回包处理与 SPreset 输出格式化。普通 ST 预设的扩展阶段为空操作。具体接口和限制见 [兼容契约](docs/compatibility.md)。
+- 昆仑 IDE 1.2r 直接运行导入文件里的助手脚本，支持工具描述承载上下文及 buffer_content 解包；已删除按脚本指纹解析模板的昆仑专用适配器。测试覆盖更改脚本名称和指纹后的同一行为。
+- 面板不再提供模式选择；旧 adapter 设置自动忽略并在下次保存时移除。不支持的内嵌扩展会报错，不回退到忽略扩展的路径。
+- 支持助手事件、registerMacroLike、本次临时变量、ready/pagehide 生命周期及虚拟 fetch。fetch 只在 QuickJS 内处理一次生成请求/完整回包，没有网络能力，不修改宿主全局 fetch。已知 SPreset 引擎加载器按完整内容指纹映射到内置接口；其他远程加载、DOM 操作、日志上传和工具 action 不执行。
+
+导入报告会定位启用条目中的未知宏、脚本语法错误、未实现的扩展选项与可静态识别的协议要求。导入不执行预设脚本，不调用模型；不兼容文件仍可保存和导出原文件。静态检查不能证明任意程序的所有分支，运行时还会校验最终请求与材料完整性。
+
+支持预置 assistant.tool_calls / tool 历史、auto/none/required/指定函数选择、Gemini toolConfig，以及 thoughtSignature、signature、extra_content.google.thoughtSignature。工具历史验证调用 ID、名称与结果配对，签名别名冲突和选择冲突均报错；历史调用不会执行。Meowssiah 1.9.12 原文件已通过编译和两种协议的模拟生成、输出格式化测试。
+
+兼容发送支持明确配置 `api` 与 `baseURL` 的 `openai-completions`（Chat Completions）和 `google-generative-ai`（Gemini）；原生 google 可沿用目录中的默认 API 地址。只使用 API Key 或配置中的认证头，不读取凭据文件，不复用 OAuth。OpenAI 风格消息的签名扩展原样保留，Gemini 转为原生 functionCall/functionResponse/thoughtSignature；服务商仍需接受相应字段及签名值。其他协议、无法表达的选择子集、未实现的 compat 设置会拒绝发送。此接口只发一次完整 JSON 请求，不走 DSH 的流式中间件、重试或 OAuth 刷新；不修改宿主或全局网络函数。详细限制见[兼容契约](docs/compatibility.md)。
+
+标准 OpenAI 的 `thinkingFormat: openai`、已知关闭的 compat 开关和空配置项不会阻止发送；仍不支持的有效选项会在报错中列出具体字段名。无需为了使用预设而删除服务商的默认兼容配置。
 
 宿主只导出可见历史。历史正文不重复运行输出正则；输入只应用保留原文的包装规则，所以原预设的删楼、摘要规则不会删掉历史。世界书沿用原轮激活结果，不重新扫描。人物与玩家设定使用宿主已解析的 `context` 段，身份宏使用 `identities`，变量和状态栏使用输入预处理后、正文生成前的 `state`。世界书段已包含本轮有效查询结果，不重复追加；历史和人物材料不再次运行宏或 EJS。旧人物快照可能合并多个字段，不保证还原 ST 原卡的逐项占位结构。
 
 输出处理采用一次有序正则管道：只选择已启用、placement=2、depth=0 适用的规则，合并提示词/显示范围，每条规则最多执行一次。包含 HTML 的结果原样交宿主，不再另行提取 content 标签。正则在有超时的 Worker 中执行，失败不会替换正文。
+
+SPreset 请求改写后，完整历史、输入、人物、世界书、写作要求和状态文本必须逐字保留在消息正文或工具描述中，重复材料也检查数量；不通过就失败，不自动补写。不会重新解析历史或执行宿主状态更新。输出格式化只处理完整模型回包，不进行残缺 JSON 抢救；输出处理完成后再执行上述一次正则。HTML 展示仍由宿主负责，本插件不提供脚本页面运行环境。
+
+每个处理阶段使用新的受限运行时，只通过 JSON 传入数据。默认 SPreset 函数 500 ms，整组助手脚本每阶段 1500 ms、最多 32 个；48 MiB JS 堆、512 KiB 栈，输入/输出及最终请求各最多 8 MiB，单脚本最多 256 KiB。助手回包阶段用冻结输入、固定时间和随机序列重建请求上下文，逐字验证与编译时捕获的请求相同，再交付完整回包；重放不产生模型调用。外围 Worker 保留编译 20 秒、输出 5 秒超时与取消。网络、文件、进程、模块加载、定时器、宿主 API 和凭据不暴露给脚本。预算在最终改写后按实际消息和工具重新计算。
 
 采样支持 temperature、输出 token 上限、独立模型选择及模型提供的推理强度。尚未映射的采样参数列在兼容报告中。超限、未支持的脚本/宏/模型协议均报错，不自动截断、降级或切换模型。预设中的上下文容量不是模型能力保证。
 
@@ -71,6 +85,10 @@ Copy-Item -LiteralPath '.\lib' -Destination $stcontextTarget -Recurse -Force
 ## 验证
 
 运行 `npm test`。可选设置 `STCONTEXT_PRESET_FIXTURE` 为本地预设路径后运行测试，会验证该文件的请求编译与一次输出正则；测试不会发送模型请求，也不会把该文件复制进仓库。
+
+`STCONTEXT_PRESET_FIXTURE` 面向昆仑原文件，验证统一流程的请求编译、原脚本解包及材料保护。`STCONTEXT_COMPAT_FIXTURE` 面向 Meowssiah 原文件，验证内置引擎映射、工具历史/选择/签名、两种协议的实际 JSON 和模拟回包格式化。运行 `node --test tests/helper.test.mjs tests/preset.test.mjs tests/spreset.test.mjs tests/protocol.test.mjs` 可覆盖两者。协议测试包含本机临时 HTTP 服务，不调用付费模型；网络沙箱需要允许回环连接。其余流水线、脚本隔离、取消与预算测试使用内存材料和模拟模型，不搭建真实 ST 对照环境，也不表示真实提供商联调已通过。
+
+维护内置依赖时执行 `npm ci --ignore-scripts`、`npm run build:runtime`，然后运行测试。`package-lock.json` 固定依赖；`lib/vendor/manifest.json` 记录产物摘要，许可收录于 `lib/vendor/LICENSES.txt`。升级解释器后应重新检查权限边界和资源限制测试。
 
 设置 `STCONTEXT_HOST_REPO` 后，`tests/client-browser.test.mjs` 使用宿主的 Playwright 与 React 开发依赖检查侧栏、弹窗和设置页在窄屏、低高度窗口中的滚动和保存。可通过 `STCONTEXT_BROWSER_EXECUTABLE` 指定本机 Chromium 或 Edge 路径。
 

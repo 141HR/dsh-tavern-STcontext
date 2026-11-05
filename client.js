@@ -7,7 +7,7 @@ window.__ModuleLoader__.load({
       inject: ['tavernUi', 'slots'],
       apply(ctx) {
         const ui = ctx.tavernUi, call = (name, args = {}) => ui.callHost('dsh-tavern-stcontext/' + name, args);
-        const editableSettings = value => ({ adapter: value?.adapter || 'auto', model: value?.model || null });
+        const editableSettings = value => ({ model: value?.model || null });
         const css = `
 .stc-scroll{box-sizing:border-box;flex:1 1 auto;width:100%;height:100%;min-width:0;min-height:0;overflow:auto;overscroll-behavior:contain}
 .stc-panel{--stc-surface:var(--dsw-specific-input-major,#fff);--stc-border:var(--dsw-alias-border-l2,#e3e4eb);--stc-muted:var(--dsw-alias-label-secondary,#717583);--stc-accent:var(--dsh-tavern-accent,#5956c9);--stc-soft:var(--dsh-tavern-accent-soft,#eeedf9);--stc-highlight:var(--stc-accent);box-sizing:border-box;width:100%;max-width:1020px;min-width:0;margin:0 auto;padding:24px;color:var(--dsw-alias-label-primary,inherit);font:inherit;font-size:14px;line-height:1.6;container:stcontext / inline-size}
@@ -198,11 +198,6 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
                   h('option', { value: '', disabled: true }, '请选择导入的预设'),
                   ...(config?.presets || []).map(item => h('option', { key: item.id, value: item.id }, item.name)))),
               selected && h('div', { className: 'stc-row' }, badge((selected.report?.enabledPrompts || 0) + ' 项提示词', 'neutral'), badge((selected.report?.regexCount || 0) + ' 条正则', 'neutral')),
-              h('details', { className: 'stc-details' }, h('summary', null, '预设适配'),
-                h('div', { className: 'stc-details-body' }, h('label', { className: 'stc-field' }, '请求模式',
-                  h('select', { className: 'stc-select', 'aria-label': '请求模式', value: settings.adapter || 'auto', disabled: busy || !config, onChange: event => setSettings({ ...settings, adapter: event.target.value }) },
-                    h('option', { value: 'auto' }, '自动识别已适配脚本'), h('option', { value: 'st' }, '标准 ST（忽略脚本行为）'))),
-                  h('p', { className: 'stc-muted' }, '默认自动识别。预设包含未适配脚本时，可选择标准 ST 模式。'))),
               h('div', { className: 'stc-card-footer stc-row stc-between' }, h('span', { className: 'stc-muted' }, 'JSON · 最大 2 MB'),
                 h('div', { className: 'stc-row' },
                   h('button', { className: 'stc-button stc-quiet', disabled: !selected || working, onClick: () => act(async () => { const value = await call('export', { id: selected.id }); download(value.name, value.text); }) }, '导出原文件'),
@@ -246,6 +241,8 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
               h('summary', null, '兼容报告', badge(activeReport.blockers?.length ? activeReport.blockers.length + ' 项待处理' : activeReport.warnings?.length ? activeReport.warnings.length + ' 项提示' : '检查通过', activeReport.blockers?.length ? 'error' : 'neutral')),
               h('div', { className: 'stc-details-body' },
                 h('p', { className: 'stc-meta' }, '顺序 ' + activeReport.order + ' · ' + activeReport.protocol),
+                h('p', { className: 'stc-muted' }, '导入报告为静态检查；脚本结果、完整材料和模型预算仍会在发送前校验。'),
+                activeReport.hooks?.length > 0 && h('p', { className: 'stc-meta' }, '处理阶段：' + activeReport.hooks.join(' → ')),
                 ...(activeReport.blockers || []).map((text, index) => h('p', { key: 'b' + index, className: 'stc-message stc-error', role: 'alert' }, text)),
                 h('ul', null, ...(activeReport.warnings || []).map((text, index) => h('li', { key: index }, text))),
                 activeReport.historyRules?.length > 0 && h('details', null, h('summary', null, '不对历史正文重复执行的规则'), h('ul', null, ...activeReport.historyRules.map(rule => h('li', { key: rule.index }, rule.name)))),

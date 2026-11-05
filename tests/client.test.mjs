@@ -113,6 +113,24 @@ function harness({ hostReady = true, initialModel, initialSettings = {}, catalog
 }
 const file = (text, name = 'imported.json') => ({ name, size: Buffer.byteLength(text), text: async () => text });
 
+test('panel automatically recognizes SPreset and removes legacy mode controls and settings', async () => {
+  const h = harness({ initialModel: { provider: 'own', model: 'story' }, initialSettings: { adapter: 'st' } });
+  try {
+    await h.mount('settings');
+    const document = { ...simplePreset, extensions: { SPreset: { FinalRequestProcessing: { enabled: true, script: '({request}) => request' } },
+      tavern_helper: { scripts: [{ enabled: true, name: 'loader', content: 'throw Error("never execute")' }] } } };
+    await h.input(file(JSON.stringify(document)));
+    assert.equal(h.selectValue('请求模式'), undefined);
+    assert.doesNotMatch(h.text(), /预设适配|请求模式|标准 ST（|受限 SPreset（/);
+    assert.match(h.text(), /受限助手环境/);
+    await h.click('保存设置');
+    assert.equal(Object.hasOwn(h.saved.settings, 'adapter'), false);
+    assert.equal(Object.hasOwn(h.calls.filter(call => call.name === 'settings').at(-1).input, 'adapter'), false);
+    assert.match(h.text(), /FinalRequestProcessing.script/);
+    assert.match(h.text(), /静态检查/);
+  } finally { h.destroy(); }
+});
+
 test('native settings configures presets and models without a game and unregisters on unload', async () => {
   const h = harness();
   try {
@@ -191,7 +209,6 @@ test('legacy selection requires a new choice; catalog failure can be refreshed w
     assert.match(h.text(), /模型列表读取失败/);
     assert.equal(h.selectValue('插件正文模型'), '');
     assert.equal(h.disabled('重新生成最新正文'), undefined);
-    await h.choose('请求模式', 'st');
     h.modelFailure = false;
     await h.click('刷新模型列表');
     assert.doesNotMatch(h.text(), /模型列表读取失败/);
@@ -200,7 +217,7 @@ test('legacy selection requires a new choice; catalog failure can be refreshed w
     await h.choose('插件正文模型', JSON.stringify({ provider: 'own', model: 'other' }));
     await h.click('保存设置');
     assert.deepEqual(h.saved.settings.model, { provider: 'own', model: 'other' });
-    assert.equal(h.saved.settings.adapter, 'st');
+    assert.equal(h.saved.settings.adapter, undefined);
   } finally { h.destroy(); }
 });
 
@@ -223,14 +240,13 @@ test('preset import keeps unsaved model edits and saving preserves hidden sampli
     await h.mount();
     await h.choose('插件正文模型', JSON.stringify({ provider: 'own', model: 'story' }));
     await h.choose('推理等级', 'high');
-    await h.choose('请求模式', 'st');
     await h.input(file(JSON.stringify(simplePreset)));
     assert.match(h.text(), /有未保存的更改/);
     assert.equal(h.selectValue('推理等级'), 'high');
-    assert.equal(h.selectValue('请求模式'), 'st');
+    assert.equal(h.selectValue('请求模式'), undefined);
     assert.equal(h.numberInputs(), 0);
     await h.click('保存设置');
-    assert.deepEqual(h.saved.settings, { ...sampling, adapter: 'st', model: { provider: 'own', model: 'story', reasoningEffort: 'high' } });
+    assert.deepEqual(h.saved.settings, { ...sampling, model: { provider: 'own', model: 'story', reasoningEffort: 'high' } });
     const patch = h.calls.filter(call => call.name === 'settings').at(-1).input;
     for (const key of Object.keys(sampling)) assert.equal(Object.hasOwn(patch, key), false);
     assert.doesNotMatch(h.text(), /有未保存的更改/);

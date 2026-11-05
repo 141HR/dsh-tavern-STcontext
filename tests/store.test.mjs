@@ -76,3 +76,20 @@ test('legacy following settings keep presets and sampling but require an indepen
     assert.deepEqual((await tavern.readPluginData()).settings, { maxTokens: 1234, temperature: .5 });
   }
 });
+
+test('removed adapter settings migrate without losing presets, models or sampling and cannot be restored by stale clients', async () => {
+  for (const adapter of ['st', 'auto', 'spreset']) {
+    const tavern = fakeTavern(), store = createPresetStore(tavern);
+    const original = await upload(store, JSON.stringify(document));
+    const data = await tavern.readPluginData(), model = { provider: 'p', model: 'm' };
+    data.settings = { adapter, model, maxTokens: 2048, temperature: 0.7 };
+    await tavern.savePluginData({ data });
+    const expected = { model, maxTokens: 2048, temperature: 0.7 };
+    assert.deepEqual((await store.list()).settings, expected);
+    assert.deepEqual((await store.active()).settings, expected);
+    await store.settings({ adapter });
+    assert.deepEqual((await tavern.readPluginData()).settings, expected);
+    assert.equal((await store.list()).activeId, original.activeId);
+    assert.equal((await store.export({ id: original.activeId })).text, JSON.stringify(document));
+  }
+});

@@ -43,7 +43,7 @@ test('overflow includes tool description and sends nothing; unsupported controls
   const h = harness([], 2000)
   await assert.rejects(h.run({ ...base, tools: [{ ...tool, description: '历史'.repeat(2000) }] }), { code: 'STCONTEXT_CONTEXT_OVERFLOW' })
   assert.equal(h.sent.length, 0)
-  await assert.rejects(h.run({ ...base, tools: [tool], toolChoice: 'required' }), { code: 'STCONTEXT_TOOL_CHOICE_UNSUPPORTED' })
+  await assert.rejects(h.run({ ...base, tools: [tool], toolChoice: 'required' }), { code: 'STCONTEXT_PROTOCOL_ROUTE_UNSUPPORTED' })
   assert.equal(h.sent.length, 0)
 })
 

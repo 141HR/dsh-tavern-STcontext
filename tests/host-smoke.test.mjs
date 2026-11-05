@@ -147,6 +147,6 @@ for (const failed of [false, true]) test(`upstream ${failed ? 'failed-input retr
   const visible = JSON.stringify(session.deriveMessages());
   assert.ok(visible.includes(candidate.text)); assert.doesNotMatch(visible, /应被替换的旧正文/);
   const preview = await call('request', { gameId: 'session' });
-  assert.equal(preview.report.protocol, kunlun ? 'kunlun-ide' : 'st');
+  assert.equal(preview.report.protocol, 'spreset');
   assert.equal(preview.report.reason, failed ? 'retry' : 'regenerate');
 });

@@ -4,6 +4,7 @@ import { runCompiler } from './lib/worker-client.mjs';
 import { createDshGeneration, selectGenerationModel } from './lib/generation.mjs';
 import { listGenerationModels, readGenerationModelReasoning } from './lib/models.mjs';
 import { compilerMaterials } from './lib/materials.mjs';
+import { createProtocolTransport } from './lib/protocol-transport.mjs';
 
 export const name = 'dsh-tavern-STcontext';
 // DSH Cordis expects service names, not the legacy required/optional shape.
@@ -11,7 +12,7 @@ export const inject = ['tavern', 'llm'];
 const PREFIX = 'dsh-tavern-stcontext';
 const PROVIDER = 'st-context';
 export function apply(ctx) {
-  const generateBody = createDshGeneration({ llm: ctx.llm, meter: ctx.get('tokenMeter') });
+  const generateBody = createDshGeneration({ llm: ctx.llm, meter: ctx.get('tokenMeter'), protocolTransport: createProtocolTransport(ctx) });
   const store = createPresetStore(ctx.tavern), previews = new Map();
   const capable = () => ctx.tavern.capabilities?.bodyGeneration === 1 && typeof ctx.tavern.bodyGenerator === 'function';
   const handle = (key, callback) => ctx.tavern.handle(PREFIX + '/' + key, callback);
@@ -32,11 +33,11 @@ export function apply(ctx) {
     return { createdAt: item.createdAt, report: item.report, total: item.json.length, offset, text: item.json.slice(offset, offset + 60000) };
   });
   if (typeof ctx.tavern.onGameRemoved === 'function') ctx.tavern.onGameRemoved(({ gameId }) => previews.delete(gameId));
-  async function prepare({ signal }) {
+  async function prepare({ signal, reason }) {
     signal?.throwIfAborted();
     const active = await store.active();
     signal?.throwIfAborted();
-    const report = inspectPreset(active.document, active.settings);
+    const report = inspectPreset(active.document, { ...active.settings, trigger: reason === 'normal' ? 'normal' : 'regenerate' });
     if (report.blockers.length) throw new Error(report.blockers.join('；'));
     selectGenerationModel(active.settings.model);
     return active;
@@ -54,7 +55,8 @@ export function apply(ctx) {
     while (previews.size > 3) previews.delete(previews.keys().next().value);
     const response = await generateBody({ request: compiled.request, signal });
     signal?.throwIfAborted();
-    const result = await runCompiler('output', { document: active.document, response, toolName: compiled.toolName }, { signal });
+    const result = await runCompiler('output', { document: active.document, response, helperState: compiled.helperState,
+      toolNames: (compiled.request.tools || []).map(tool => tool.name) }, { signal });
     signal?.throwIfAborted();
     return { text: result.text };
   }

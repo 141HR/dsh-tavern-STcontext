@@ -41,7 +41,7 @@ test('sidebar, overlay and native settings reach all content in short and narrow
             const { createElement: h } = modules.react;
             let panel, action, overlay, Settings;
             const config = { hostReady: true, generationReady: true, activeId: 'preset',
-              settings: { adapter: 'auto', model: { provider: 'own', model: 'story' } },
+              settings: { model: { provider: 'own', model: 'story' } },
               presets: [{ id: 'preset', name: '测试预设', digest: 'a'.repeat(64),
                 report: { enabledPrompts: 10, regexCount: 3, order: 100001, protocol: 'chat', blockers: [],
                   warnings: Array.from({ length: 25 }, (_, i) => `兼容提示 ${i + 1}：这是一条用于检查完整内容可达性的说明。`) } }] };
