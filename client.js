@@ -313,10 +313,6 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
                     !isMarker && Number(prompt.injection_position) === 1 && h('div', { className: 'stc-grid' },
                       field('注入深度', prompt.injection_depth ?? 0, value => patchPrompt('injection_depth', numberValue(value)), { type: 'number', min: 0, step: 1 }),
                       field('同深度顺序', prompt.injection_order ?? 0, value => patchPrompt('injection_order', numberValue(value)), { type: 'number', min: 0, step: 1 })),
-                    h('div', { className: 'stc-editor-form' }, h('p', { className: 'stc-muted' }, '触发类型（全不选表示全部；宿主当前使用正常生成或重生成）'),
-                      h('div', { className: 'stc-row' }, ...[...new Set(['normal', 'regenerate', 'continue', 'swipe', 'quiet', 'impersonate', ...(prompt.injection_trigger || [])])].map(trigger =>
-                        h('span', { key: trigger }, check(({ normal: '正常生成', regenerate: '重生成', continue: '继续', swipe: '滑动', quiet: '静默', impersonate: '扮演用户' })[trigger] || trigger,
-                          prompt.injection_trigger?.includes(trigger) || false, enabled => patchPrompt('injection_trigger', enabled ? [...(prompt.injection_trigger || []), trigger] : (prompt.injection_trigger || []).filter(item => item !== trigger))))))),
                     h('div', { className: 'stc-row' }, button('复制条目', () => addPrompt(true), isMarker),
                       button('从当前顺序移除', () => changeDocument(next => { orderOf(next).order = orderOf(next).order.filter(item => item.identifier !== prompt.identifier); }), !inOrder)),
                     h('p', { className: 'stc-muted' }, '移出顺序后仍保留条目及扩展引用；勾选可重新加入。永久删除或编辑扩展请使用完整 JSON。'))

@@ -31,7 +31,7 @@ test('sidebar, overlay and native settings reach all content in short and narrow
           let data;
           const store = createPresetStore({ readPluginData: async () => structuredClone(data), savePluginData: async input => { data = structuredClone(input.data); } });
           const doc = { temperature: .75, top_p: .9, prompts: [
-            { identifier: 'main', name: '主提示词', role: 'system', content: '你是叙事助手。保持人物动机一致，沿用 {{user}} 的视角。' },
+            { identifier: 'main', name: '主提示词', role: 'system', content: '你是叙事助手。保持人物动机一致，沿用 {{user}} 的视角。', injection_trigger: ['regenerate'] },
             ...Array.from({ length: 10 }, (_, i) => ({ identifier: 'rule-' + i, name: '叙事规则 ' + (i + 1), role: 'system', content: '规则 ' + i })),
             { identifier: 'chatHistory', marker: true, name: '聊天历史' },
           ], notes: '保留扩展和未知字段', extensions: { regex_scripts: [{ scriptName: '清理输出', findRegex: '/X/g', replaceString: 'Y', placement: [2] }] } };
@@ -113,7 +113,7 @@ test('sidebar, overlay and native settings reach all content in short and narrow
           await editor.getByRole('button', { name: '下移 主提示词', exact: true }).click();
           await editor.getByRole('combobox', { name: '注入位置' }).selectOption('1');
           await editor.getByRole('spinbutton', { name: '注入深度' }).fill('3');
-          await editor.getByRole('checkbox', { name: '重生成', exact: true }).check();
+          assert.equal(await editor.getByRole('checkbox', { name: /^(正常生成|重生成|继续|滑动|静默|扮演用户)$/ }).count(), 0);
           const editorMetrics = await area.evaluate(element => ({ width: element.clientWidth, scrollWidth: element.scrollWidth }));
           assert.ok(editorMetrics.scrollWidth <= editorMetrics.width + 1, 'editor must not overflow horizontally');
           if (process.env.STCONTEXT_SCREENSHOT_DIR && surface === 'settings') {

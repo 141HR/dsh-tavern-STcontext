@@ -121,7 +121,7 @@ const file = (text, name = 'imported.json') => ({ name, size: Buffer.byteLength(
 test('editor updates prompts, order and regex while retaining hidden sampling and extension data', async () => {
   const h = harness();
   const doc = { ...simplePreset, temperature: .65, top_p: .9, openai_max_tokens: 4096,
-    prompts: [{ identifier: 'main', name: '主提示词', role: 'system', content: 'original', custom: { keep: true } }, ...simplePreset.prompts],
+    prompts: [{ identifier: 'main', name: '主提示词', role: 'system', content: 'original', injection_trigger: ['normal'], custom: { keep: true } }, ...simplePreset.prompts],
     prompt_order: [{ character_id: 100000, order: [{ identifier: 'main', enabled: false }] }, { character_id: 100001, order: [{ identifier: 'main', enabled: true }, { identifier: 'chatHistory', enabled: true }] }],
     extensions: { unknown: { preserve: [1, '脚本'] }, regex_scripts: [{ scriptName: '规则', findRegex: '/X/g', replaceString: 'XX', placement: [2], minDepth: 0, custom: 'keep' }] } };
   try {
@@ -130,7 +130,8 @@ test('editor updates prompts, order and regex while retaining hidden sampling an
     await h.click('编辑预设');
     await h.field('预设名称', '我的预设'); await h.field('提示词内容', '新的提示词 {{user}}');
     await h.choose('消息角色', 'user'); await h.choose('注入位置', '1');
-    await h.field('注入深度', '2'); await h.field('正常生成', true);
+    await h.field('注入深度', '2');
+    assert.doesNotMatch(h.text(), /触发类型|全不选表示全部|扮演用户/);
     await h.labeledClick('下移 主提示词');
     await h.click('新增提示词'); await h.field('条目名称', '额外规则'); await h.field('提示词内容', 'added');
     await h.click('复制条目'); await h.click('从当前顺序移除');
