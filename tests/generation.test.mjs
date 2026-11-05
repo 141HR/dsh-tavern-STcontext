@@ -32,8 +32,8 @@ test('isolated generation sends exact messages and tool descriptions without add
 test('text block-end replaces streamed deltas, and incomplete/tool protocol failures are rejected', async () => {
   const h = harness([{ type: 'text-delta', index: 0, text: '正文' }, { type: 'block-end', index: 0, block: { type: 'text', text: '正文' } }, { type: 'finish', reason: { kind: 'stop' } }])
   assert.equal((await h.run(base)).text, '正文')
-  for (const kind of ['max-tokens', 'aborted', 'error']) {
-    await assert.rejects(harness([{ type: 'text-delta', text: '不完整' }, { type: 'finish', reason: { kind } }]).run(base), { code: 'STCONTEXT_GENERATION_INCOMPLETE' })
+  for (const [kind, code] of [['max-tokens', 'STCONTEXT_OUTPUT_LIMIT'], ['aborted', 'STCONTEXT_REQUEST_ABORTED'], ['error', 'STCONTEXT_GENERATION_INCOMPLETE']]) {
+    await assert.rejects(harness([{ type: 'text-delta', text: '不完整' }, { type: 'finish', reason: { kind } }]).run(base), { code })
   }
   await assert.rejects(harness([{ type: 'block-end', block: { type: 'tool-call', name: 'return_body', arguments: '{' } },
     { type: 'finish', reason: { kind: 'tool-calls' } }]).run({ ...base, tools: [tool] }), /完整 JSON/)

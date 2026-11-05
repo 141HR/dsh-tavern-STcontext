@@ -243,7 +243,7 @@ test('cancel reaches compatibility HTTP and does not retry, while oversized resp
   await assert.rejects(h.run({ request: request(), signal: controller.signal }), /用户取消/);
   assert.equal(attempts, 1);
   const large = harness({ fetchImpl: async () => new Response(new Uint8Array(8 * 1024 * 1024 + 1)) });
-  await assert.rejects(large.run({ request: request() }), /8 MiB/);
+  await assert.rejects(large.run({ request: request() }), { code: 'STCONTEXT_RESPONSE_TOO_LARGE' });
 });
 
 test('actual HTTP request carries the complete extended protocol once', async t => {
@@ -260,6 +260,72 @@ test('actual HTTP request carries the complete extended protocol once', async t 
   assert.equal(received.length, 1); assert.equal(received[0].url, '/v1/chat/completions');
   assert.deepEqual(received[0].json.messages, request().messages);
   assert.equal(received[0].headers.authorization, 'Bearer synthetic-test-key');
+});
+
+test('provider failures retain actionable categories before candidate and tool validation', async () => {
+  const cases = [
+    ['openai-completions', openai({ finish_reason: 'content_filter', message: { tool_calls: [null] } }), 'CONTENT_FILTERED', /内容审核/],
+    ['openai-completions', openai({ finish_reason: 'length', message: {} }), 'OUTPUT_LIMIT', /长度上限/],
+    ['openai-completions', openai({ finish_reason: 'stop', message: { refusal: 'private refusal text' } }), 'MODEL_REFUSAL', /明确拒绝/],
+    ['openai-completions', { error: { code: 'context_length_exceeded', message: 'private prompt' } }, 'CONTEXT_OVERFLOW', /上下文容量/],
+    ['openai-completions', { error: { code: 'insufficient_quota', message: 'private account' } }, 'QUOTA_EXCEEDED', /额度不足/],
+    ['openai-completions', openai({ finish_reason: 'stop', message: { content: '' } }), 'EMPTY_RESPONSE', /未返回有效正文/],
+    ['openai-completions', openai({ finish_reason: 'stop', message: { content: '', reasoning_content: 'private reasoning' } }), 'REASONING_ONLY', /只返回了思考/],
+    ['google-generative-ai', { promptFeedback: { blockReason: 'PROHIBITED_CONTENT' } }, 'CONTENT_FILTERED', /内容审核/],
+    ['google-generative-ai', { candidates: [{ finishReason: 'SAFETY', content: { parts: [null] } }] }, 'CONTENT_FILTERED', /内容审核/],
+    ['google-generative-ai', { candidates: [{ finishReason: 'MAX_TOKENS' }] }, 'OUTPUT_LIMIT', /长度上限/],
+    ['google-generative-ai', { candidates: [{ finishReason: 'MALFORMED_FUNCTION_CALL' }] }, 'TOOL_PROTOCOL', /工具调用格式/],
+    ['google-generative-ai', { candidates: [{ finishReason: 'STOP', content: { parts: [{ thought: true, text: 'private reasoning' }] } }] }, 'REASONING_ONLY', /只返回了思考/],
+    ['google-generative-ai', { error: { status: 'INVALID_ARGUMENT', message: 'The input token count exceeds the maximum number of tokens allowed' } }, 'CONTEXT_OVERFLOW', /上下文容量/],
+    ['google-generative-ai', { error: { code: 429, status: 'RESOURCE_EXHAUSTED' } }, 'RATE_LIMITED', /请求受限/],
+  ];
+  for (const [api, reply, code, pattern] of cases) {
+    const h = harness({ api, reply });
+    await assert.rejects(h.run({ request: request() }), error => {
+      assert.equal(error.code, 'STCONTEXT_' + code); assert.match(error.message, pattern);
+      assert.doesNotMatch(JSON.stringify(error) + error.message, /private/);
+      return true;
+    });
+    assert.equal(h.sent.length, 1); assert.equal(h.counts().nativeCalls, 0);
+  }
+});
+
+test('HTTP failures use bounded error envelopes and preserve status when the body is unusable', async () => {
+  const cases = [
+    [400, JSON.stringify({ error: { code: 'context_length_exceeded', message: 'private prompt' } }), 'CONTEXT_OVERFLOW'],
+    [403, JSON.stringify({ error: { code: 'content_policy_violation' } }), 'CONTENT_FILTERED'],
+    [401, '<html>private credential echo</html>', 'AUTH_FAILED'],
+    [429, 'private quota information', 'RATE_LIMITED'],
+    [503, '', 'PROVIDER_UNAVAILABLE'],
+    [400, 'private prompt'.repeat(10000), 'REQUEST_REJECTED'],
+    [400, JSON.stringify({ error: { message: 'unknown failure', request: { messages: ['private prompt'] } } }), 'REQUEST_REJECTED'],
+  ];
+  for (const [status, body, code] of cases) {
+    let attempts = 0;
+    const h = harness({ fetchImpl: async () => { attempts++; return new Response(body, { status }); } });
+    await assert.rejects(h.run({ request: request() }), error => {
+      assert.equal(error.code, 'STCONTEXT_' + code); assert.equal(error.details.httpStatus, status);
+      assert.doesNotMatch(JSON.stringify(error) + error.message, /private|unknown failure/);
+      assert.match(error.message, new RegExp('HTTP ' + status)); return true;
+    });
+    assert.equal(attempts, 1);
+  }
+});
+
+test('unknown, malformed and interrupted responses do not invent moderation or context causes', async () => {
+  for (const reply of [null, [], {}, { choices: [null] }, { candidates: [null] }, { error: { message: 'unknown failure' } },
+    openai({ finish_reason: 'unknown_provider_reason', message: { content: '' } })]) {
+    const h = harness({ fetchImpl: async () => Response.json(reply) });
+    await assert.rejects(h.run({ request: request() }), error => {
+      assert.doesNotMatch(error.message, /内容审核|上下文容量|正则|强制工具/); return true;
+    });
+  }
+  const timeout = harness({ fetchImpl: async () => { throw new DOMException('private detail', 'TimeoutError'); } });
+  await assert.rejects(timeout.run({ request: request() }), { code: 'STCONTEXT_REQUEST_TIMEOUT' });
+  const network = harness({ fetchImpl: async () => { throw new TypeError('fetch failed', { cause: { code: 'ECONNRESET', secret: 'private' } }); } });
+  await assert.rejects(network.run({ request: request() }), { code: 'STCONTEXT_NETWORK_ERROR' });
+  const broken = harness({ fetchImpl: async () => new Response(new ReadableStream({ start(c) { c.error(new TypeError('fetch failed')); } })) });
+  await assert.rejects(broken.run({ request: request() }), { code: 'STCONTEXT_NETWORK_ERROR' });
 });
 
 test('original Meowssiah compiles, dispatches both protocol bodies and formats the reply without tool actions', { skip: !process.env.STCONTEXT_COMPAT_FIXTURE }, async () => {

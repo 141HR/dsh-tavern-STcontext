@@ -22,7 +22,7 @@ function fixture(capability = 1, apiVersion = 7) {
         const response = await respond(request);
         if (response.text !== undefined) yield { type: 'text-delta', index: 0, text: response.text };
         for (const [index, call] of (response.toolCalls || []).entries()) yield { type: 'block-end', index: index + 1, block: { type: 'tool-call', ...call } };
-        yield { type: 'finish', reason: { kind: 'stop' } };
+        yield { type: 'finish', reason: response.finishReason || { kind: 'stop' } };
       } };
   } };
   apply({ tavern, llm, get: key => { assert.equal(key, 'tokenMeter'); },
@@ -115,7 +115,30 @@ test('invalid selection/materials fail before dispatch; model failure never retu
   const config = await f.prepare();
   await assert.rejects(f.generate(() => assert.fail('no dispatch'), config, { ...materials, schemaVersion: 2 }), /材料格式/);
   assert.equal(f.requests, 0);
-  await assert.rejects(f.generate(async () => { throw new Error('model failure'); }, config), /model failure/);
+  await assert.rejects(f.generate(async () => { throw new Error('model failure'); }, config), { code: 'STCONTEXT_PROVIDER_ERROR', stage: 'response' });
+});
+
+for (const reason of ['normal', 'regenerate', 'retry']) test(`${reason} exposes the original failure stage without a candidate or retry`, async () => {
+  const f = fixture(), doc = structuredClone(preset);
+  // If response failures reached output processing, this would hide the cause.
+  doc.extensions.SPreset = { OutputPreprocessing: { enabled: true, script: '() => {throw Error("must not run");}' } };
+  await importPreset(f, doc);
+  const config = await f.prepare();
+  for (const [response, code] of [
+    [{ text: '', finishReason: { kind: 'error', failure: { message: 'Provider finish_reason: content_filter' } } }, 'CONTENT_FILTERED'],
+    [{ text: '', finishReason: { kind: 'error', failure: { code: 'context_length_exceeded' } } }, 'CONTEXT_OVERFLOW'],
+    [{ text: '' }, 'EMPTY_RESPONSE'],
+  ]) {
+    const before = f.requests;
+    await assert.rejects(f.generate(async () => response, config, { ...materials, reason }), { code: 'STCONTEXT_' + code, stage: 'response' });
+    assert.equal(f.requests, before + 1);
+  }
+  doc.extensions.SPreset.OutputPreprocessing.script = '() => ({output:""})';
+  await importPreset(f, doc);
+  await assert.rejects(f.generate(async () => ({ text: '正文' }), await f.prepare(), { ...materials, reason }), {
+    code: 'STCONTEXT_OUTPUT_EMPTY', stage: 'output-script', message: '预设输出脚本处理后正文为空，未替换宿主正文',
+  });
+  assert.equal(f.requests, 4);
 });
 
 test('cancellation before compilation or after a late model response cannot return prose', async () => {
