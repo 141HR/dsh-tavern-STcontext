@@ -205,6 +205,28 @@ test('unavailable routes, configuration races and oversized history/signatures f
   assert.equal(h.counts().credentialReads, 0);
 });
 
+test('route diagnostics distinguish missing configuration from unsupported protocols without dispatching', async () => {
+  for (const [profile, expected] of [
+    [{ api: undefined }, /配置缺少 api；/],
+    [{ baseURL: undefined }, /配置缺少 baseURL；/],
+    [{ api: '', baseURL: '' }, /配置缺少 api、baseURL；/],
+    [{ api: 'openai-responses' }, /API 协议（openai-responses）不支持/],
+    [{ api: 'anthropic-messages', baseURL: undefined }, /API 协议（anthropic-messages）不支持/],
+    [{ api: 'private-invalid-config-value', baseURL: 'https://private.invalid' }, /API 协议不支持/],
+  ]) {
+    const h = harness({ profile });
+    await assert.rejects(h.run({ request: request() }), error => {
+      assert.equal(error.code, 'STCONTEXT_PROTOCOL_ROUTE_UNSUPPORTED');
+      assert.match(error.message, expected);
+      assert.match(error.message, /未发送请求/);
+      assert.doesNotMatch(error.message, /private-invalid-config-value|private\.invalid|synthetic-test-key/);
+      return true;
+    });
+    assert.equal(h.sent.length, 0);
+    assert.deepEqual(h.counts(), { nativeCalls: 0, credentialReads: 0 });
+  }
+});
+
 test('frozen reasoning and budget controls are translated explicitly or rejected', async () => {
   const r = request(); r.model.reasoningEffort = 'high';
   const h = harness({ profile: { compat: { maxTokensField: 'max_completion_tokens' }, models: [{ id: 'story-model', reasoningEfforts: { high: 'medium' } }] } });

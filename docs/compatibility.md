@@ -82,6 +82,8 @@ DSH 0.2.1-rc.2 的公开请求能表示工具历史，但 pi-ai 发送层没有�
 
 从当前已配置服务商读取 api/baseURL；目录可能对不同模型采用不同默认协议，因此除原生 google 外要求明确配置这两项。API Key 经公开 credentials.resolve 取得，或使用服务商已配置的认证头；不从预设接收地址、凭据或请求头。只在发送前解析凭据，不传入 Worker、预览或结果。禁止 HTTP 重定向，不自动重试或改发其他路径；HTTP 错误仅报告状态码，避免把上游诊断中的敏感内容显示出来。认证不支持 OAuth、Codex、Copilot、Vertex 或 Azure 专用流程。
 
+如果生成在发送前报服务商配置错误，应检查 **STcontext 面板选中的正文模型**对应的服务商，不是前台或后台模型。`配置缺少 api` 表示需要在 DSH 服务商设置中显式选择所用的 Chat Completions 或 Gemini 协议；`配置缺少 baseURL` 表示需要填写该协议的基础地址，即使宿主普通请求能够沿用目录默认值。`API 协议…不支持` 表示当前选用的协议不在上述范围内；只有服务商实际提供相应端点时才能改选协议，不能仅改名称。错误不会显示地址、认证头或密钥，也不会发送模型请求。
+
 兼容发送保留温度和输出预算，支持 maxTokensField。OpenAI 推理强度采用模型显式 reasoningEfforts 映射或标准值；Gemini 3 使用 thinkingLevel，其他 Gemini 型号需要明确的 thinkingBudgets。未实现的 compat、缓存或 WebSocket 配置会拒绝；不能把这条接口当作完整的 pi-ai 替代品。请求与回包限制各为 8 MiB，超时采用服务商 timeoutMs/streamIdleTimeoutMs 或 300 秒，取消中断 HTTP 并拒绝结果。
 
 compat 按实际值校验：支持显式 `thinkingFormat: openai`；已知的关闭开关、空路由/模板配置及未赋值字段不会仅因名称存在就被拒绝。模型级配置只覆盖有值的字段，不用默认空项覆盖服务商要求。支持 `requiresToolResultName`、`requiresAssistantAfterToolResult`（工具结果后接用户消息时补入协议要求的助手占位消息）、`requiresReasoningContentOnAssistantMessages`（补空 reasoning_content）、`supportsStore`（发送 store=false）和 `vllmPriority`。历史调用与签名仍保留。未知字段或实际启用的未实现功能仍拒绝，并在错误中列出具体 `compat.字段名`，不显示字段值或凭据。
