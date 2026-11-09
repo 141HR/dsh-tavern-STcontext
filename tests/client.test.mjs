@@ -10,7 +10,7 @@ const simplePreset = { prompts: [{ identifier: 'chatHistory', marker: true }],
   prompt_order: [{ character_id: 100001, order: [{ identifier: 'chatHistory', enabled: true }] }] };
 
 // Drive the real client and host entry with a tiny hook scheduler; no DOM or framework dependency.
-function harness({ hostReady = true, initialModel, initialSettings = {}, catalogFailure = false, resolveModelInfo } = {}) {
+function harness({ hostReady = true, initialModel, initialSettings = {}, catalogFailure = false, resolveModelInfo, getStorageLimits } = {}) {
   const hooks = [], effects = [], pending = new Set(), timers = new Map(), calls = [], downloads = [], disposers = [];
   let cursor = 0, dirty = true, tree, component, properties, panel, action, overlay, registered, settingsSection, settingsSpec, saved, serial = 0;
   const handlers = new Map();
@@ -19,6 +19,7 @@ function harness({ hostReady = true, initialModel, initialSettings = {}, catalog
   const models = [{ id: 'story', name: 'Story', reasoning: { efforts: [{ id: 'high', name: 'High' }] } }, { id: 'other', name: 'Other' }];
   const tavern = { readPluginData: async () => structuredClone(saved), savePluginData: async ({ data }) => { saved = structuredClone(data); },
     handle: (key, fn) => handlers.set(key, fn), onGameRemoved() {} };
+  if (getStorageLimits) tavern.getPluginDataLimits = getStorageLimits;
   if (hostReady) Object.assign(tavern, { capabilities: { bodyGeneration: 1 }, bodyGenerator() {} });
   apply({ tavern, get: () => undefined, llm: {
     listProviders: () => [{ id: 'own', name: 'Own Provider' }],
@@ -47,7 +48,13 @@ function harness({ hostReady = true, initialModel, initialSettings = {}, catalog
   const ui = {
     callHost(name, input) {
       calls.push({ name: name.replace('dsh-tavern-stcontext/', ''), input: structuredClone(input) });
-      const promise = Promise.resolve().then(() => handlers.get(name)(input));
+      const promise = Promise.resolve().then(() => {
+        assert.ok(JSON.stringify(input ?? {}).length <= 256 * 1024, 'host argument limit');
+        return handlers.get(name)(input);
+      }).then(value => {
+        assert.ok(JSON.stringify(value ?? null).length <= 4 * 1024 * 1024, 'host result limit');
+        return value;
+      });
       pending.add(promise); promise.then(() => pending.delete(promise), () => pending.delete(promise));
       return promise;
     },
@@ -117,6 +124,57 @@ function harness({ hostReady = true, initialModel, initialSettings = {}, catalog
   };
 }
 const file = (text, name = 'imported.json') => ({ name, size: Buffer.byteLength(text), text: async () => text });
+
+test('10 MiB import and export use bounded RPC chunks; oversized imports and edited drafts stay unsaved', async () => {
+  const h = harness({ getStorageLimits: () => ({ maxBytes: 256 * 1024 * 1024 }) });
+  const source = JSON.stringify(simplePreset).padEnd(10 * 1024 * 1024, ' ');
+  try {
+    await h.mount('settings');
+    assert.match(h.text(), /最大 10 MiB/); assert.match(h.text(), /256 MiB/);
+    await h.input(file(source)); assert.match(h.text(), /预设已导入/);
+    await h.click('导出预设');
+    assert.equal(await h.downloads[0].blob.text(), source);
+    assert.ok(h.calls.filter(call => call.name === 'preset/read').length > 100);
+    assert.equal(h.calls.some(call => call.name === 'export'), false);
+    const before = h.saved, uploads = h.calls.filter(call => call.name === 'upload/begin').length;
+    await h.input({ name: 'too-large.json', size: source.length + 1, text: () => assert.fail('reject before reading') });
+    assert.match(h.text(), /不能超过 10 MiB/);
+    assert.equal(h.calls.filter(call => call.name === 'upload/begin').length, uploads);
+    await h.click('编辑预设'); await h.click('完整 JSON');
+    await h.field('预设 JSON', source + ' '); await h.click('保存预设');
+    assert.match(h.text(), /不能超过 10 MiB/);
+    assert.equal(h.fieldValue('预设 JSON'), source + ' ');
+    assert.deepEqual(h.saved, before);
+  } finally { h.destroy(); }
+});
+
+test('capacity query failures can be retried; legacy hosts display their smaller limits', async () => {
+  let offline = true;
+  const h = harness({ getStorageLimits: () => { if (offline) throw Error('offline'); return { maxBytes: 8 * 1024 * 1024 }; } });
+  try {
+    await h.mount(); assert.match(h.text(), /无法读取宿主存储额度/); assert.equal(h.disabled('导入 JSON'), true);
+    offline = false; await h.click('刷新预设与容量');
+    assert.match(h.text(), /最大 10 MiB/); assert.match(h.text(), /8 MiB/);
+    await h.input(file(JSON.stringify(simplePreset))); assert.match(h.text(), /预设已导入/);
+  } finally { h.destroy(); }
+  const legacy = harness();
+  try { await legacy.mount(); assert.match(legacy.text(), /最大 2 MiB/); assert.match(legacy.text(), /250 KiB/); assert.match(legacy.text(), /升级宿主/); }
+  finally { legacy.destroy(); }
+});
+
+test('large compatibility reports and draft validation are read in multiple bounded chunks', async () => {
+  const h = harness({ getStorageLimits: () => ({ maxBytes: 256 * 1024 * 1024 }) });
+  const prompts = Array.from({ length: 500 }, (_, index) => ({ identifier: 'p' + index, role: 'system', content: '{{unsupported_macro}}' }));
+  const doc = { prompts, prompt_order: [{ character_id: 100001, order: prompts.map(({ identifier }) => ({ identifier, enabled: true })) }] };
+  try {
+    await h.mount(); await h.input(file(JSON.stringify(doc)));
+    assert.match(h.text(), /unsupported_macro/);
+    assert.ok(h.calls.filter(call => call.name === 'preset/report').length > 1);
+    await h.click('编辑预设'); await h.click('校验草稿');
+    assert.match(h.text(), /结构有效，可保存/);
+    assert.ok(h.calls.filter(call => call.name === 'preset/report' && call.input.offset >= 50000).length >= 2);
+  } finally { h.destroy(); }
+});
 
 test('editor updates prompts, order and regex while retaining hidden sampling and extension data', async () => {
   const h = harness();

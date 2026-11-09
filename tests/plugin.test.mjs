@@ -2,12 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { apply, name } from '../index.mjs';
 import { materials, preset } from './fixtures/materials.mjs';
+import { restoreGenerationConfig } from '../lib/generation-config.mjs';
 
 function fixture(capability = 1, apiVersion = 7) {
   let saved, generator, respond, requests = 0;
   const handlers = new Map();
   const tavern = {
     apiVersion, capabilities: { bodyGeneration: capability },
+    getPluginDataLimits: () => ({ maxBytes: 256 * 1024 * 1024 }),
     readPluginData: async () => structuredClone(saved),
     savePluginData: async ({ data }) => { saved = structuredClone(data); },
     handle: (key, fn) => handlers.set(key, fn), onGameRemoved() {},
@@ -39,7 +41,7 @@ function fixture(capability = 1, apiVersion = 7) {
 }
 async function importPreset(f, document = preset) {
   const text = JSON.stringify(document), { id } = await f.call('upload/begin', { name: 'example.json', size: text.length });
-  await f.call('upload/chunk', { id, index: 0, text });
+  for (let index = 0, offset = 0; offset < text.length; index++, offset += 50000) await f.call('upload/chunk', { id, index, text: text.slice(offset, offset + 50000) });
   await f.call('upload/finish', { id });
   await f.call('settings', { model: { provider: 'fixture', model: 'story', reasoningEffort: 'high' } });
 }
@@ -55,6 +57,21 @@ test('upstream API 7 registers once, imports, and freezes configuration without 
   assert.equal((await f.call('config')).hostReady, true);
   assert.equal((await f.call('config')).generationReady, true);
   for (const key of ['start', 'status', 'cancel']) assert.equal(f.handlers.has('dsh-tavern-stcontext/' + key), false);
+});
+
+test('large presets cross the 2 MiB host snapshot boundary compressed and keep old expanded snapshots usable', async () => {
+  const f = fixture();
+  const document = { ...preset, notes: '原始数据'.repeat(800000) };
+  assert.ok(Buffer.byteLength(JSON.stringify(document)) > 8 * 1024 * 1024);
+  await importPreset(f, document);
+  const frozen = JSON.parse(JSON.stringify(await f.prepare()));
+  assert.equal(frozen.snapshotVersion, 1);
+  assert.ok(Buffer.byteLength(JSON.stringify(frozen)) < 2 * 1024 * 1024);
+  await f.call('remove', { id: (await f.call('config')).activeId });
+  for (const config of [frozen, restoreGenerationConfig(frozen)]) {
+    const output = await f.generate(async () => ({ text: 'X' }), config);
+    assert.equal(output.text, 'XX');
+  }
 });
 
 test('capabilities, not fork API versions or method presence alone, control registration', async () => {

@@ -8,6 +8,10 @@ window.__ModuleLoader__.load({
       apply(ctx) {
         const ui = ctx.tavernUi, call = (name, args = {}) => ui.callHost('dsh-tavern-stcontext/' + name, args);
         const editableSettings = value => ({ model: value?.model || null });
+        const formatBytes = bytes => {
+          const unit = bytes >= 1024 * 1024 ? 1024 * 1024 : 1024;
+          return Number((bytes / unit).toFixed(2)) + (unit === 1024 ? ' KiB' : ' MiB');
+        };
         const drafts = new Map();
         const clone = value => JSON.parse(JSON.stringify(value));
         const markerIds = new Set(['worldInfoBefore', 'worldInfoAfter', 'personaDescription', 'charDescription', 'charPersonality', 'scenario', 'dialogueExamples', 'chatHistory']);
@@ -121,6 +125,7 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
           const [config, setConfig] = React.useState(null);
           const [error, setError] = React.useState(''), [notice, setNotice] = React.useState(''), [working, setWorking] = React.useState(false);
           const [settings, setSettings] = React.useState({}), [report, setReport] = React.useState(null);
+          const [presetReport, setPresetReport] = React.useState({ key: '', value: null, error: '' });
           const [catalog, setCatalog] = React.useState([]), [modelsLoading, setModelsLoading] = React.useState(false), [modelError, setModelError] = React.useState('');
           const [reasoning, setReasoning] = React.useState({ key: '', efforts: [], loading: false, error: '' });
           const [request, setRequest] = React.useState(''), [requestShown, setRequestShown] = React.useState(false);
@@ -182,12 +187,13 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
           async function importFile(selected) {
             if (!selected) return;
             await act(async () => {
-              if (selected.size > 2 * 1024 * 1024) throw new Error('预设文件不能超过 2 MB');
+              checkPresetSize(selected.size);
               await uploadText(await selected.text(), { name: selected.name });
               await refresh(false); setReport(null); setNotice('预设已导入');
             });
           }
           async function uploadText(text, options) {
+            checkPresetSize(new Blob([text]).size);
             const upload = await call('upload/begin', { ...options, size: text.length });
             try {
               for (let index = 0, offset = 0; offset < text.length; index++, offset += 50000) {
@@ -196,13 +202,25 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
               return await call('upload/finish', { id: upload.id });
             } catch (error) { await call('upload/cancel', { id: upload.id }).catch(() => {}); throw error; }
           }
-          async function openEditor(id) {
+          function checkPresetSize(bytes) {
+            if (!config?.limits) throw new Error(config?.limitsError || '尚未读取存储额度，请刷新后重试');
+            if (bytes > config.limits.maxPresetBytes) throw new Error('预设文件不能超过 ' + formatBytes(config.limits.maxPresetBytes) + '（按 UTF-8 字节计算）');
+          }
+          async function readChunks(route, args, firstPart) {
             let info, offset = 0; const chunks = [];
             do {
-              const part = await call('preset/read', { id, offset, ...(info ? { revision: info.revision } : {}) });
+              const part = firstPart || await call(route, { ...args, offset, ...(info ? { revision: info.revision, token: info.token } : {}) });
+              firstPart = null;
+              if (part.offset !== offset || typeof part.text !== 'string' || !Number.isSafeInteger(part.total) || part.total < offset + part.text.length
+                || (info && (part.revision !== info.revision || part.total !== info.total || part.token !== info.token))
+                || (!part.text.length && offset < part.total)) throw new Error('预设读取不完整，请重试');
               info = part; chunks.push(part.text); offset += part.text.length;
             } while (offset < info.total);
-            const text = chunks.join(''), snapshot = editorSnapshot(text), doc = snapshot.document;
+            return { ...info, text: chunks.join('') };
+          }
+          async function openEditor(id) {
+            const info = await readChunks('preset/read', { id });
+            const text = info.text, snapshot = editorSnapshot(text), doc = snapshot.document;
             if (alive.current) setEditor({ id, revision: info.revision, name: info.name, text, ...snapshot, dirty: false,
               promptId: doc ? orderOf(doc).order[0]?.identifier || doc.prompts[0].identifier : '', search: '', regexIndex: 0 });
           }
@@ -226,13 +244,16 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
               const value = await uploadText(draft.text, { name: operation === 'copy' ? draft.name.replace(/\.json$/i, '').slice(0, 148) + ' 副本.json' : draft.name,
                 operation, presetId: draft.id, revision: draft.revision });
               if (!alive.current) return;
-              if (operation === 'validate') setEditor(current => ({ ...current, report: value.report, error: '' }));
+              if (operation === 'validate') {
+                const result = await readChunks('preset/report', { id: draft.id }, value.reportPart);
+                if (alive.current) setEditor(current => ({ ...current, report: JSON.parse(result.text), error: '' }));
+              }
               else {
                 const id = operation === 'copy' ? value.activeId : draft.id;
                 const record = value.presets.find(item => item.id === id);
                 setConfig(current => ({ ...current, ...value })); setReport(null);
                 const snapshot = editorSnapshot(draft.text);
-                setEditor({ ...draft, ...snapshot, tab: snapshot.document ? draft.tab : 'json', id, revision: record.revision, name: record.name, dirty: false, report: record.report });
+                setEditor({ ...draft, ...snapshot, tab: snapshot.document ? draft.tab : 'json', id, revision: record.revision, name: record.name, dirty: false, report: null });
                 drafts.delete(draftKey); setNotice(operation === 'copy' ? '已另存为副本并选用' : '预设已保存，下次生成生效');
               }
             } catch (err) { if (alive.current) setEditor(current => ({ ...current, error: err.message || String(err) })); }
@@ -361,7 +382,16 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
             setReport(info.report); setRequest(text); setRequestShown(true);
           }
           const selected = config?.presets.find(item => item.id === config.activeId);
-          const activeReport = report || selected?.report;
+          const reportKey = selected ? selected.id + ':' + (selected.revision || selected.digest) : '';
+          React.useEffect(() => {
+            let active = true;
+            setPresetReport({ key: reportKey, value: null, error: '' });
+            if (selected) readChunks('preset/report', { id: selected.id, revision: selected.revision || selected.digest }).then(result => {
+              if (active) setPresetReport({ key: reportKey, value: JSON.parse(result.text), error: '' });
+            }).catch(err => { if (active) setPresetReport({ key: reportKey, value: null, error: err.message || String(err) }); });
+            return () => { active = false; };
+          }, [reportKey, config?.settings]);
+          const activeReport = report || (presetReport.key === reportKey ? presetReport.value : null);
           const modelKey = settings.model?.provider && settings.model?.model
             ? JSON.stringify({ provider: settings.model.provider, model: settings.model.model }) : '';
           const modelOptions = catalog.flatMap(group => group.models.map(model => ({
@@ -406,6 +436,8 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
               h('div', { className: 'stc-row' }, h('span', { className: 'stc-header-status' }, badge(!config ? '加载中' : ready ? '配置就绪' : '待配置', ready ? '' : 'neutral')),
                 close && h('button', { className: 'stc-button stc-quiet', disabled: busy, onClick: () => discardThen(close) }, '关闭'))),
             h('div', { className: 'stc-feedback' }, error && message(error, 'error', 'alert'), notice && message(notice),
+              config?.limitsError && message(config.limitsError, 'error', 'alert'),
+              presetReport.key === reportKey && presetReport.error && message('兼容报告读取失败：' + presetReport.error, 'error', 'alert'),
               config?.hostReady === false && message('宿主尚未提供插件正文生成接口，请更新上游 DSH Tavern。预设仍可导入保存。', 'error', 'alert')),
             confirmation && h('div', { ref: confirmationElement, tabIndex: -1, className: 'stc-confirm', role: 'alertdialog', 'aria-label': '未保存的预设更改' },
               h('p', null, '当前预设草稿尚未保存，继续会放弃这些修改。'),
@@ -415,7 +447,7 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
             h('div', { className: 'stc-grid' },
             h('section', { className: 'stc-card stc-config-card', 'aria-label': '预设管理' },
               h('div', { className: 'stc-card-title' }, h('div', null, h('h3', null, '预设'), h('p', { className: 'stc-muted' }, '管理叙事规则与上下文组织方式')),
-                h('button', { className: 'stc-button', disabled: busy, onClick: () => file.current?.click() }, '导入 JSON')),
+                h('button', { className: 'stc-button', disabled: busy || !config?.limits, onClick: () => file.current?.click() }, '导入 JSON')),
               h('input', { ref: file, type: 'file', accept: '.json,application/json', style: { display: 'none' }, onChange: event => { const selectedFile = event.target.files?.[0]; event.target.value = ''; if (selectedFile) discardThen(() => importFile(selectedFile)); } }),
               !selected && h('div', { className: 'stc-empty' }, h('p', null, config ? '还没有选定预设' : '正在读取预设…'), h('p', { className: 'stc-muted' }, '导入 SillyTavern 预设 JSON，即可开始配置。')),
               h('label', { className: 'stc-field' }, '当前预设',
@@ -423,11 +455,14 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
                   onChange: event => { const id = event.target.value; discardThen(() => act(async () => { await call('select', { id }); setReport(null); await refresh(false); })); } },
                   h('option', { value: '', disabled: true }, '请选择导入的预设'),
                   ...(config?.presets || []).map(item => h('option', { key: item.id, value: item.id }, item.name)))),
-              selected && h('div', { className: 'stc-row' }, badge((selected.report?.enabledPrompts || 0) + ' 项提示词', 'neutral'), badge((selected.report?.regexCount || 0) + ' 条正则', 'neutral')),
+              selected && h('div', { className: 'stc-row' }, badge((selected.summary?.enabledPrompts || 0) + ' 项提示词', 'neutral'), badge((selected.summary?.regexCount || 0) + ' 条正则', 'neutral')),
+              config?.limits && h('p', { className: 'stc-muted', role: 'status' }, '存储已用 ' + formatBytes(config.storage.usedBytes) + ' / ' + formatBytes(config.limits.maxStoreBytes) + '，剩余 ' + formatBytes(config.storage.remainingBytes) + '（压缩后的预设与配置合计）'),
+              config?.limits?.legacy && h('p', { className: 'stc-muted' }, '当前宿主未提供容量查询接口，使用旧版限制；升级宿主可导入更大的预设。'),
+              h('button', { className: 'stc-button stc-quiet', disabled: busy, onClick: () => act(() => refresh(false)) }, '刷新预设与容量'),
               h('button', { className: 'stc-button', disabled: !selected || busy || !!editor, onClick: () => act(() => openEditor(selected.id)) }, '编辑预设'),
-              h('div', { className: 'stc-card-footer stc-row stc-between' }, h('span', { className: 'stc-muted' }, 'JSON · 最大 2 MB'),
+              h('div', { className: 'stc-card-footer stc-row stc-between' }, h('span', { className: 'stc-muted' }, config?.limits ? 'JSON · 最大 ' + formatBytes(config.limits.maxPresetBytes) : '正在读取容量'),
                 h('div', { className: 'stc-row' },
-                  h('button', { className: 'stc-button stc-quiet', disabled: !selected || working, onClick: () => act(async () => { const value = await call('export', { id: selected.id }); download(value.name.replace(/\.json$/i, '') + '.json', value.text); }) }, '导出预设'),
+                  h('button', { className: 'stc-button stc-quiet', disabled: !selected || working, onClick: () => act(async () => { const value = await readChunks('preset/read', { id: selected.id }); download(value.name.replace(/\.json$/i, '') + '.json', value.text); }) }, '导出预设'),
                   h('button', { className: 'stc-button stc-quiet stc-danger', disabled: !selected || busy, onClick: () => discardThen(() => act(async () => { await call('remove', { id: selected.id }); await refresh(false); setReport(null); })) }, '移除')))),
             h('section', { className: 'stc-card stc-config-card', 'aria-label': '模型设置' },
               h('div', { className: 'stc-card-title' }, h('div', null, h('h3', null, '正文模型'), h('p', { className: 'stc-muted' }, '用于正文生成与重生成')), badge('独立配置')),

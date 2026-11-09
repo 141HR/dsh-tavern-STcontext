@@ -2,16 +2,126 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createPresetStore, encodePreset, decodePreset } from '../lib/store.mjs';
 import { randomBytes } from 'node:crypto';
+import { MAX_PRESET_BYTES } from '../lib/limits.mjs';
 const document = { prompts: [{ identifier: 'chatHistory', marker: true }], prompt_order: [{ character_id: 100001, order: [{ identifier: 'chatHistory', enabled: true }] }] };
 function fakeTavern() {
   let data;
   return { readPluginData: async () => structuredClone(data), savePluginData: async input => { data = structuredClone(input.data); } };
 }
 async function upload(store, text, name = 'preset.json', options = {}) {
-  const { id } = store.begin({ name, size: text.length, ...options });
+  const { id } = await store.begin({ name, size: text.length, ...options });
   for (let index = 0, offset = 0; offset < text.length; index++, offset += 50000) store.chunk({ id, index, text: text.slice(offset, offset + 50000) });
   return store.finish({ id });
 }
+function modernTavern(maxBytes = 256 * 1024 * 1024) {
+  return Object.assign(fakeTavern(), { maxBytes, getPluginDataLimits() { return { maxBytes: this.maxBytes }; } });
+}
+async function readAll(store, id, first, kind = 'read') {
+  let info = first || await store[kind]({ id }), text = info.text;
+  while (text.length < info.total) {
+    info = await store[kind]({ id, revision: info.revision, token: info.token, offset: text.length });
+    text += info.text;
+  }
+  return text;
+}
+
+test('modern hosts import, validate, edit, copy and reload a 10 MiB UTF-8 preset losslessly', async () => {
+  const tavern = modernTavern(), store = createPresetStore(tavern);
+  const json = JSON.stringify({ ...document, notes: '中文😊'.repeat(200000) });
+  const source = json + ' '.repeat(MAX_PRESET_BYTES - Buffer.byteLength(json));
+  assert.equal(Buffer.byteLength(source), 10 * 1024 * 1024);
+  const imported = await upload(store, source), id = imported.activeId;
+  assert.deepEqual(imported.limits, { maxPresetBytes: 10 * 1024 * 1024, maxStoreBytes: 256 * 1024 * 1024, legacy: false });
+  const options = { operation: 'validate', presetId: id, revision: imported.presets[0].revision };
+  const validated = await upload(store, source, 'draft.json', options);
+  assert.equal(JSON.parse(await readAll(store, id, validated.reportPart, 'report')).validation, 'static');
+  const edited = await upload(store, source, 'renamed.json', { ...options, operation: 'replace' });
+  assert.equal(edited.presets[0].name, 'renamed.json');
+  const copied = await upload(store, source, 'copy.json', { ...options, operation: 'copy' });
+  assert.equal(copied.presets.length, 2);
+  const reloaded = createPresetStore(tavern);
+  assert.equal(await readAll(reloaded, copied.activeId), source);
+  assert.deepEqual((await reloaded.active()).document, JSON.parse(source));
+  assert.equal(copied.storage.usedBytes, Buffer.byteLength(JSON.stringify(await tavern.readPluginData())));
+  assert.equal(copied.storage.remainingBytes, tavern.maxBytes - copied.storage.usedBytes);
+});
+
+test('10 MiB bounds apply to assembled UTF-8 bytes and advertised upload length', async () => {
+  const tavern = modernTavern(), store = createPresetStore(tavern);
+  await upload(store, JSON.stringify(document));
+  const before = await tavern.readPluginData();
+  await assert.rejects(store.begin({ name: 'large.json', size: MAX_PRESET_BYTES + 1 }), /10 MiB/);
+  const json = JSON.stringify({ ...document, notes: '中'.repeat(Math.floor(MAX_PRESET_BYTES / 3)) });
+  assert.ok(json.length < MAX_PRESET_BYTES && Buffer.byteLength(json) > MAX_PRESET_BYTES);
+  await assert.rejects(upload(store, json), /10 MiB/);
+  const exact = JSON.stringify(document).padEnd(MAX_PRESET_BYTES, ' ');
+  await assert.rejects(upload(store, exact + ' '), /10 MiB/);
+  assert.deepEqual(await tavern.readPluginData(), before);
+});
+
+test('aggregate quota counts encoded data, reports and settings; failures preserve all saved data', async () => {
+  const tavern = modernTavern(200 * 1024), store = createPresetStore(tavern);
+  const source = JSON.stringify({ ...document, notes: randomBytes(90000).toString('base64') });
+  const imported = await upload(store, source), before = await tavern.readPluginData();
+  assert.ok(imported.storage.usedBytes > 100 * 1024 && imported.storage.usedBytes < tavern.maxBytes);
+  await assert.rejects(upload(store, source, 'copy.json', { operation: 'copy', presetId: imported.activeId, revision: imported.presets[0].revision }), /存储上限/);
+  await assert.rejects(upload(store, source.replace('notes', 'notes2')), /存储上限/);
+  assert.deepEqual(await tavern.readPluginData(), before);
+  tavern.maxBytes = imported.storage.usedBytes;
+  assert.equal((await store.settings({})).storage.remainingBytes, 0);
+  tavern.maxBytes--;
+  await assert.rejects(store.settings({}), /存储上限/);
+  assert.deepEqual(await tavern.readPluginData(), before);
+  assert.equal((await store.remove({ id: imported.activeId })).presets.length, 0);
+});
+
+test('quota follows the host, falls back only when absent, and fails closed until a failed query recovers', async () => {
+  const legacy = createPresetStore(fakeTavern());
+  assert.deepEqual((await legacy.list()).limits, { maxPresetBytes: 2 * 1024 * 1024, maxStoreBytes: 250 * 1024, legacy: true });
+  await assert.rejects(legacy.begin({ name: 'large.json', size: 2 * 1024 * 1024 + 1 }), /2 MiB/);
+  const tavern = modernTavern(8 * 1024 * 1024), store = createPresetStore(tavern);
+  await upload(store, JSON.stringify(document));
+  const before = await tavern.readPluginData();
+  assert.equal((await store.list()).limits.maxStoreBytes, 8 * 1024 * 1024);
+  for (const value of [0, NaN, 1.5, '268435456', undefined]) {
+    tavern.maxBytes = value;
+    const listed = await store.list();
+    assert.equal(listed.limits, null); assert.match(listed.limitsError, /重试/);
+    await assert.rejects(upload(store, JSON.stringify(document)), /读取宿主存储额度/);
+  }
+  tavern.getPluginDataLimits = async () => { throw Error('offline'); };
+  await assert.rejects(store.settings({ maxTokens: 1234 }), /offline/);
+  assert.deepEqual(await tavern.readPluginData(), before);
+  tavern.getPluginDataLimits = () => ({ maxBytes: 256 * 1024 * 1024 });
+  assert.equal((await store.list()).limits.maxStoreBytes, 256 * 1024 * 1024);
+});
+
+test('listing avoids decompressing every preset, and chunk tokens keep a bounded consistent read snapshot', async () => {
+  const tavern = modernTavern(); let time = 0, reads = 0;
+  const read = tavern.readPluginData;
+  tavern.readPluginData = () => { reads++; return read(); };
+  const store = createPresetStore(tavern, () => time);
+  const source = JSON.stringify({ ...document, notes: '😊汉字'.repeat(80000) });
+  const imported = await upload(store, source), id = imported.activeId;
+  const saved = await read();
+  saved.presets.push({ id: 'damaged', data: 'not-gzip', report: { warnings: ['x'.repeat(5 * 1024 * 1024)] } });
+  await tavern.savePluginData({ data: saved });
+  const listed = await store.list();
+  assert.equal(listed.presets.length, 2);
+  assert.ok(JSON.stringify(listed).length < 3000);
+  await store.remove({ id: 'damaged' });
+  const first = await store.read({ id });
+  const startReads = reads;
+  assert.equal(await readAll(store, id, first), source);
+  assert.equal(reads, startReads, 'continuations must not reload or decompress the library');
+  const frozen = await store.read({ id });
+  await upload(store, JSON.stringify(document), 'edited.json', { operation: 'replace', presetId: id, revision: frozen.revision });
+  assert.equal(await readAll(store, id, frozen), source);
+  await assert.rejects(store.read({ id, revision: frozen.revision }), /已修改/);
+  const expired = await store.read({ id: (await upload(store, source)).activeId });
+  time += 60001;
+  await assert.rejects(store.read({ id: expired.id, token: expired.token, offset: expired.text.length }), /失效/);
+});
 test('large JSON is chunked, persisted compressed and exported byte-for-byte', async () => {
   const source = JSON.stringify({ ...document, notes: '原始预设数据'.repeat(40000) });
   assert.ok(Buffer.byteLength(source) > 256 * 1024);
@@ -85,12 +195,12 @@ test('draft validation is read-only; cancellation and expiration release upload 
   const text = JSON.stringify({ ...document, notes: '草稿'.repeat(60000) });
   const options = { operation: 'validate', presetId: id, revision: imported.presets[0].revision };
   const result = await upload(store, text, 'draft.json', options);
-  assert.equal(result.report.validation, 'static');
+  assert.equal(JSON.parse(result.reportPart.text).validation, 'static');
   assert.deepEqual(await tavern.readPluginData(), before);
-  const pending = store.begin({ name: 'draft.json', size: text.length, ...options });
+  const pending = await store.begin({ name: 'draft.json', size: text.length, ...options });
   store.cancel(pending);
   assert.throws(() => store.chunk({ id: pending.id, index: 0, text: text.slice(0, 100) }), /失效/);
-  const expired = store.begin({ name: 'expired.json', size: 2 });
+  const expired = await store.begin({ name: 'expired.json', size: 2 });
   store.chunk({ id: expired.id, index: 0, text: '{}' }); time += 300001;
   await assert.rejects(store.finish(expired), /失效/);
   assert.deepEqual(await tavern.readPluginData(), before);
@@ -102,7 +212,7 @@ test('legacy records without revision can be edited and chunked reads preserve U
   const imported = await upload(store, source), id = imported.activeId;
   const legacy = await tavern.readPluginData(); delete legacy.presets[0].revision; await tavern.savePluginData({ data: legacy });
   let offset = 0, text = '', info;
-  do { info = await store.read({ id, offset, revision: imported.presets[0].digest }); text += info.text; offset += info.text.length; } while (offset < info.total);
+  do { info = await store.read({ id, offset, revision: imported.presets[0].digest, token: info?.token }); text += info.text; offset += info.text.length; } while (offset < info.total);
   assert.equal(text, source);
   await upload(store, source, 'renamed.json', { operation: 'replace', presetId: id, revision: info.revision });
   assert.equal((await store.active()).name, 'renamed.json');
@@ -110,7 +220,7 @@ test('legacy records without revision can be edited and chunked reads preserve U
 test('incomplete/out-of-order uploads never replace the active preset', async () => {
   const store = createPresetStore(fakeTavern());
   const original = await upload(store, JSON.stringify(document));
-  const { id } = store.begin({ name: 'broken.json', size: 100 });
+  const { id } = await store.begin({ name: 'broken.json', size: 100 });
   assert.throws(() => store.chunk({ id, index: 1, text: 'x' }), /分块/);
   await assert.rejects(store.finish({ id }), /不完整/);
   assert.equal((await store.list()).activeId, original.activeId);
@@ -128,7 +238,7 @@ test('preset export preserves script data without executing it; edits select/del
 test('compressed store rejects malformed and oversized decompressed payloads', () => {
   assert.equal(decodePreset(encodePreset('你好')), '你好');
   assert.throws(() => decodePreset('invalid'));
-  assert.throws(() => decodePreset(encodePreset('a'.repeat(2 * 1024 * 1024 + 1))));
+  assert.throws(() => decodePreset(encodePreset('a'.repeat(MAX_PRESET_BYTES + 1))));
 });
 
 test('independent model persists across reloads, validates atomically and can be cleared', async () => {

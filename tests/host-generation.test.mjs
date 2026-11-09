@@ -38,6 +38,7 @@ for (const mode of ['plugin-direct', 'plugin-tool-call']) test(`upstream ${mode}
   let pluginData, requests = 0;
   const handlers = new Map();
   apply({ get: () => undefined, tavern: { capabilities: { bodyGeneration: 1 }, handle: (name, callback) => handlers.set(name, callback),
+    getPluginDataLimits: () => ({ maxBytes: 256 * 1024 * 1024 }),
     readPluginData: async () => copy(pluginData), savePluginData: async ({ data }) => { pluginData = copy(data); },
     bodyGenerator: entry => providers.register('dsh-tavern-STcontext', entry) },
     get agents() { assert.fail('plugin generation must be independent of foreground selection'); },
@@ -56,13 +57,14 @@ for (const mode of ['plugin-direct', 'plugin-tool-call']) test(`upstream ${mode}
     } },
   });
   const call = (name, args) => handlers.get('dsh-tavern-stcontext/' + name)(args);
-  const preset = JSON.stringify({ prompts: [{ identifier: 'chatHistory', marker: true },
+  const preset = JSON.stringify({ notes: 'x'.repeat(3 * 1024 * 1024), prompts: [{ identifier: 'chatHistory', marker: true },
     { identifier: 'normal', role: 'system', content: 'normal-only', injection_trigger: ['normal'] },
     { identifier: 'regen', role: 'system', content: 'regenerate-only', injection_trigger: ['regenerate'] }],
     prompt_order: [{ character_id: 100001, order: ['normal', 'regen', 'chatHistory'].map(identifier => ({ identifier, enabled: true })) }],
     extensions: { regex_scripts: [{ id: 'once', placement: [2], findRegex: '/X/g', replaceString: 'XX', markdownOnly: true, promptOnly: true }] } });
   const { id } = await call('upload/begin', { name: 'test.json', size: preset.length });
-  await call('upload/chunk', { id, index: 0, text: preset }); await call('upload/finish', { id });
+  for (let index = 0, offset = 0; offset < preset.length; index++, offset += 50000) await call('upload/chunk', { id, index, text: preset.slice(offset, offset + 50000) });
+  await call('upload/finish', { id });
   await call('settings', { model: { provider: 'independent', model: 'plugin-story' } });
   await turns.prepare({ sessionId: 'session', turn: 2, userText: '继续', requestId: 'r' });
   // Settings changed after preparation must not change this operation's model.

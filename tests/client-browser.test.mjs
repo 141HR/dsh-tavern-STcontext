@@ -36,19 +36,24 @@ test('sidebar, overlay and native settings reach all content in short and narrow
             { identifier: 'chatHistory', marker: true, name: '聊天历史' },
           ], notes: '保留扩展和未知字段', extensions: { regex_scripts: [{ scriptName: '清理输出', findRegex: '/X/g', replaceString: 'Y', placement: [2] }] } };
           doc.prompt_order = [{ character_id: 100001, order: doc.prompts.map(prompt => ({ identifier: prompt.identifier, enabled: true })) }];
-          const text = JSON.stringify(doc), upload = store.begin({ name: '测试预设.json', size: text.length });
+          const text = JSON.stringify(doc), upload = await store.begin({ name: '测试预设.json', size: text.length });
           store.chunk({ id: upload.id, index: 0, text }); await store.finish(upload);
           await store.settings({ model: { provider: 'own', model: 'story' } });
           await page.exposeFunction('hostCall', async (name, input) => {
             const method = name.replace('dsh-tavern-stcontext/', '');
             if (method === 'config') {
               const config = await store.list();
-              config.presets[0].report.warnings.push(...Array.from({ length: 25 }, (_, i) => `兼容提示 ${i + 1}：这是一条用于检查完整内容可达性的说明。`));
               return { ...config, hostReady: true };
+            }
+            if (method === 'preset/report') {
+              const part = await store.report(input), report = JSON.parse(part.text);
+              report.warnings.push(...Array.from({ length: 25 }, (_, i) => `兼容提示 ${i + 1}：这是一条用于检查完整内容可达性的说明。`));
+              const text = JSON.stringify(report);
+              return { ...part, text, total: text.length };
             }
             if (method === 'models') return { groups: [{ provider: 'own', providerName: 'Own', models: [{ id: 'story', name: 'Story' }] }] };
             if (method === 'model-reasoning') return { efforts: [] };
-            if (method === 'request') return { createdAt: 1, report: (await store.list()).presets[0].report, total: 2, text: '{}' };
+            if (method === 'request') return { createdAt: 1, report: JSON.parse((await store.report({ id: data.activeId })).text), total: 2, text: '{}' };
             const routes = { 'preset/read': 'read', 'upload/begin': 'begin', 'upload/chunk': 'chunk', 'upload/finish': 'finish', 'upload/cancel': 'cancel', settings: 'settings', export: 'export', select: 'select', remove: 'remove' };
             if (routes[method]) return store[routes[method]](input);
             throw Error('Unexpected call: ' + method);

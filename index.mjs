@@ -5,6 +5,7 @@ import { createDshGeneration, selectGenerationModel } from './lib/generation.mjs
 import { listGenerationModels, readGenerationModelReasoning } from './lib/models.mjs';
 import { compilerMaterials } from './lib/materials.mjs';
 import { createProtocolTransport } from './lib/protocol-transport.mjs';
+import { freezeGenerationConfig, restoreGenerationConfig } from './lib/generation-config.mjs';
 
 export const name = 'dsh-tavern-STcontext';
 // DSH Cordis expects service names, not the legacy required/optional shape.
@@ -24,6 +25,7 @@ export function apply(ctx) {
   handle('upload/finish', input => store.finish(input));
   handle('upload/cancel', input => store.cancel(input));
   handle('preset/read', input => store.read(input));
+  handle('preset/report', input => store.report(input));
   handle('select', input => store.select(input));
   handle('remove', input => store.remove(input));
   handle('export', input => store.export(input));
@@ -42,10 +44,11 @@ export function apply(ctx) {
     const report = inspectPreset(active.document, { ...active.settings, trigger: reason === 'normal' ? 'normal' : 'regenerate' });
     if (report.blockers.length) throw new Error(report.blockers.join('；'));
     selectGenerationModel(active.settings.model);
-    return active;
+    return freezeGenerationConfig(active);
   }
-  async function generate({ materials, config: active, signal }) {
+  async function generate({ materials, config, signal }) {
     signal?.throwIfAborted();
+    const active = restoreGenerationConfig(config);
     if (!active?.document || !active?.settings) throw new Error('宿主未提供冻结的预设配置，请重新生成本轮');
     selectGenerationModel(active.settings.model);
     const compiled = await runCompiler('compile', { document: active.document, materials: compilerMaterials(materials), settings: active.settings }, { signal });

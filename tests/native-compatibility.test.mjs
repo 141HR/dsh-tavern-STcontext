@@ -31,11 +31,12 @@ test('import diagnoses active unknown macros, malformed syntax, and unsupported 
   const doc = structuredClone(preset);
   doc.prompts[1].content = '{{unsupported_macro}}';
   doc.extensions.unknown = { enabled: true };
-  const text = JSON.stringify(doc), { id } = store.begin({ name: 'diagnostic.json', size: text.length });
+  const text = JSON.stringify(doc), { id } = await store.begin({ name: 'diagnostic.json', size: text.length });
   store.chunk({ id, index: 0, text });
   const config = await store.finish({ id });
-  assert.ok(config.presets[0].report.blockers.some(x => x.includes('prompts[1]') && x.includes('unsupported_macro')));
-  assert.ok(config.presets[0].report.blockers.some(x => x.includes('extensions.unknown')));
+  const report = JSON.parse((await store.report({ id: config.activeId })).text);
+  assert.ok(report.blockers.some(x => x.includes('prompts[1]') && x.includes('unsupported_macro')));
+  assert.ok(report.blockers.some(x => x.includes('extensions.unknown')));
   assert.equal((await store.export({ id: config.activeId })).text, text);
   doc.prompts[1].content = '{{broken';
   assert.ok(inspectPreset(doc).blockers.some(x => x.includes('未闭合')));
