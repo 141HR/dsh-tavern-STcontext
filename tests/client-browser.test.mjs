@@ -29,7 +29,12 @@ test('sidebar, overlay and native settings reach all content in short and narrow
         page.on('pageerror', error => errors.push(error.message));
         try {
           let data;
-          const store = createPresetStore({ readPluginData: async () => structuredClone(data), savePluginData: async input => { data = structuredClone(input.data); } });
+          const sharedId = 'presets/shared.json';
+          const store = createPresetStore({ readPluginData: async () => structuredClone(data), savePluginData: async input => { data = structuredClone(input.data); },
+            capabilities: { generationPresets: 1 },
+            listGenerationPresets: async () => [{ id: sharedId, name: '宿主预设' }],
+            readGenerationPreset: async () => ({ name: '宿主预设', text }),
+          });
           const doc = { temperature: .75, top_p: .9, prompts: [
             { identifier: 'main', name: '主提示词', role: 'system', content: '你是叙事助手。保持人物动机一致，沿用 {{user}} 的视角。', injection_trigger: ['regenerate'] },
             ...Array.from({ length: 10 }, (_, i) => ({ identifier: 'rule-' + i, name: '叙事规则 ' + (i + 1), role: 'system', content: '规则 ' + i })),
@@ -43,7 +48,7 @@ test('sidebar, overlay and native settings reach all content in short and narrow
             const method = name.replace('dsh-tavern-stcontext/', '');
             if (method === 'config') {
               const config = await store.list();
-              return { ...config, hostReady: true };
+              return { ...config, ...await store.listHostPresets(), hostReady: true };
             }
             if (method === 'preset/report') {
               const part = await store.report(input), report = JSON.parse(part.text);
@@ -164,6 +169,14 @@ test('sidebar, overlay and native settings reach all content in short and narrow
           await page.evaluate(() => window.remount());
           await page.getByRole('button', { name: '编辑预设', exact: true }).waitFor();
           assert.equal(await page.getByRole('region', { name: '预设编辑器' }).count(), 0, 'discarded draft must not be restored');
+          const selection = page.getByRole('combobox', { name: '当前预设' });
+          await selection.selectOption('host:' + sharedId);
+          await page.getByText('宿主预设在 DSH Tavern 预设库中编辑', { exact: false }).waitFor();
+          assert.equal(data.hostPreset, sharedId);
+          assert.equal(await page.getByRole('button', { name: '编辑预设', exact: true }).isDisabled(), true);
+          await selection.selectOption('host:current');
+          await page.waitForFunction(() => !document.querySelector('select[aria-label="当前预设"]').disabled);
+          assert.equal(data.hostPreset, 'current');
           if (surface === 'settings') {
             assert.equal(await page.getByRole('button', { name: '重新生成最新正文' }).count(), 0);
             assert.equal(await page.evaluate(() => calls.some(call => ['status', 'start', 'cancel', 'request'].includes(call.method))), false);

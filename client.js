@@ -381,7 +381,11 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
             const text = chunks.join('');
             setReport(info.report); setRequest(text); setRequestShown(true);
           }
-          const selected = config?.presets.find(item => item.id === config.activeId);
+          const hostPreset = config?.hostPreset;
+          const sharedPresets = config?.sharedPresets || [];
+          const sharedAvailable = Array.isArray(config?.sharedPresets);
+          const missingSharedPreset = hostPreset && (hostPreset === 'current' ? !sharedAvailable : !sharedPresets.some(item => item.id === hostPreset));
+          const selected = hostPreset ? null : config?.presets.find(item => item.id === config.activeId);
           const reportKey = selected ? selected.id + ':' + (selected.revision || selected.digest) : '';
           React.useEffect(() => {
             let active = true;
@@ -423,7 +427,7 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
           const reasoningLoading = !!modelKey && (modelsLoading || reasoning.key !== modelKey || reasoning.loading);
           const reasoningError = reasoning.key === modelKey ? reasoning.error : '';
           const settingsDirty = config && JSON.stringify(editableSettings(settings)) !== JSON.stringify(editableSettings(config.settings));
-          const ready = !!(config?.hostReady && selected && modelKey && !reasoningLoading);
+          const ready = !!(config?.hostReady && (selected || hostPreset && !missingSharedPreset) && modelKey && !reasoningLoading);
           const message = (text, kind = 'notice', role = 'status') => h('p', { className: 'stc-message stc-' + kind, role }, text);
           const badge = (text, tone = '') => h('span', { className: 'stc-badge' + (tone ? ' stc-badge-' + tone : '') }, text);
           // Sidebar tabs and overlays have a bounded host area; settings already owns its scroll area.
@@ -437,6 +441,7 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
                 close && h('button', { className: 'stc-button stc-quiet', disabled: busy, onClick: () => discardThen(close) }, '关闭'))),
             h('div', { className: 'stc-feedback' }, error && message(error, 'error', 'alert'), notice && message(notice),
               config?.limitsError && message(config.limitsError, 'error', 'alert'),
+              config?.sharedPresetsError && message(config.sharedPresetsError, 'error', 'alert'),
               presetReport.key === reportKey && presetReport.error && message('兼容报告读取失败：' + presetReport.error, 'error', 'alert'),
               config?.hostReady === false && message('宿主尚未提供插件正文生成接口，请更新上游 DSH Tavern。预设仍可导入保存。', 'error', 'alert')),
             confirmation && h('div', { ref: confirmationElement, tabIndex: -1, className: 'stc-confirm', role: 'alertdialog', 'aria-label': '未保存的预设更改' },
@@ -449,12 +454,21 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
               h('div', { className: 'stc-card-title' }, h('div', null, h('h3', null, '预设'), h('p', { className: 'stc-muted' }, '管理叙事规则与上下文组织方式')),
                 h('button', { className: 'stc-button', disabled: busy || !config?.limits, onClick: () => file.current?.click() }, '导入 JSON')),
               h('input', { ref: file, type: 'file', accept: '.json,application/json', style: { display: 'none' }, onChange: event => { const selectedFile = event.target.files?.[0]; event.target.value = ''; if (selectedFile) discardThen(() => importFile(selectedFile)); } }),
-              !selected && h('div', { className: 'stc-empty' }, h('p', null, config ? '还没有选定预设' : '正在读取预设…'), h('p', { className: 'stc-muted' }, '导入 SillyTavern 预设 JSON，即可开始配置。')),
+              !selected && !hostPreset && h('div', { className: 'stc-empty' }, h('p', null, config ? '还没有选定预设' : '正在读取预设…'), h('p', { className: 'stc-muted' }, sharedAvailable ? '可直接选择宿主预设，也可导入 SillyTavern 预设 JSON。' : '导入 SillyTavern 预设 JSON，即可开始配置。')),
               h('label', { className: 'stc-field' }, '当前预设',
-                h('select', { className: 'stc-select', 'aria-label': '当前预设', value: config?.activeId || '', disabled: busy || !config?.presets.length,
-                  onChange: event => { const id = event.target.value; discardThen(() => act(async () => { await call('select', { id }); setReport(null); await refresh(false); })); } },
-                  h('option', { value: '', disabled: true }, '请选择导入的预设'),
-                  ...(config?.presets || []).map(item => h('option', { key: item.id, value: item.id }, item.name)))),
+                h('select', { className: 'stc-select', 'aria-label': '当前预设', value: hostPreset ? 'host:' + hostPreset : config?.activeId || '', disabled: busy || !sharedAvailable && !config?.presets.length,
+                  onChange: event => {
+                    const value = event.target.value;
+                    const selection = value.startsWith('host:') ? { hostPreset: value.slice(5) } : { id: value };
+                    discardThen(() => act(async () => { await call('select', selection); setReport(null); await refresh(false); }));
+                  } },
+                  h('option', { value: '', disabled: true }, sharedAvailable ? '请选择预设' : '请选择导入的预设'),
+                  ...(config?.presets || []).map(item => h('option', { key: item.id, value: item.id }, item.name)),
+                  sharedAvailable && h('optgroup', { label: 'DSH Tavern 预设库' },
+                    h('option', { value: 'host:current' }, '跟随本局宿主预设'),
+                    ...sharedPresets.map(item => h('option', { key: item.id, value: 'host:' + item.id }, item.name))),
+                  missingSharedPreset && h('option', { value: 'host:' + hostPreset, disabled: true }, '已选宿主预设不可用'))),
+              hostPreset && h('p', { className: 'stc-muted' }, '宿主预设在 DSH Tavern 预设库中编辑，修改从下一次生成或重生成开始生效。'),
               selected && h('div', { className: 'stc-row' }, badge((selected.summary?.enabledPrompts || 0) + ' 项提示词', 'neutral'), badge((selected.summary?.regexCount || 0) + ' 条正则', 'neutral')),
               config?.limits && h('p', { className: 'stc-muted', role: 'status' }, '存储已用 ' + formatBytes(config.storage.usedBytes) + ' / ' + formatBytes(config.limits.maxStoreBytes) + '，剩余 ' + formatBytes(config.storage.remainingBytes) + '（压缩后的预设与配置合计）'),
               config?.limits?.legacy && h('p', { className: 'stc-muted' }, '当前宿主未提供容量查询接口，使用旧版限制；升级宿主可导入更大的预设。'),
@@ -513,6 +527,10 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
             requestShown && h('section', { className: 'stc-card stc-request', 'aria-label': '请求预览' },
               h('div', { className: 'stc-card-title' }, h('div', null, h('h3', null, '请求预览'), h('p', { className: 'stc-request-name' }, 'stcontext-request.json')),
                 h('div', { className: 'stc-row' }, h('button', { className: 'stc-button', onClick: () => download('stcontext-request.json', request) }, '下载完整请求'), h('button', { className: 'stc-button stc-quiet', onClick: () => setRequestShown(false) }, '收起'))),
+              typeof report?.outputProcessing?.hostRegex === 'boolean' && h('p', { className: 'stc-muted' },
+                report.outputProcessing.hostRegex
+                  ? 'STcontext 先应用预设输出正则，DSH Tavern 保存正文时再应用宿主正则。两边配置的相同规则可能先后执行。'
+                  : '本轮使用 STcontext 预设输出正则，宿主正则已关闭。'),
               h('pre', null, request))));
         }
         ctx.effect(() => ctx.slots.inject('settings.section', () => ctx.slots.register({
