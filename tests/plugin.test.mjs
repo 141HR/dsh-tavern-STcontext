@@ -4,11 +4,12 @@ import { apply, name } from '../index.mjs';
 import { materials, preset } from './fixtures/materials.mjs';
 import { restoreGenerationConfig } from '../lib/generation-config.mjs';
 
-function fixture(capability = 1, apiVersion = 7) {
+function fixture(capability = 1, apiVersion = 7, sharedPresets = {}) {
   let saved, generator, respond, requests = 0;
   const handlers = new Map();
   const tavern = {
-    apiVersion, capabilities: { bodyGeneration: capability },
+    apiVersion, capabilities: { bodyGeneration: capability, ...sharedPresets.capabilities },
+    ...sharedPresets.methods,
     getPluginDataLimits: () => ({ maxBytes: 256 * 1024 * 1024 }),
     readPluginData: async () => structuredClone(saved),
     savePluginData: async ({ data }) => { saved = structuredClone(data); },
@@ -30,7 +31,7 @@ function fixture(capability = 1, apiVersion = 7) {
   apply({ tavern, llm, get: key => { assert.equal(key, 'tokenMeter'); },
     get agents() { assert.fail('must not read the foreground model'); } });
   return {
-    get generator() { return generator; }, get requests() { return requests; }, handlers,
+    get generator() { return generator; }, get requests() { return requests; }, get saved() { return saved; }, handlers,
     call: (key, value) => handlers.get('dsh-tavern-stcontext/' + key)(value),
     prepare: () => generator.prepare({ gameId: 'test', reason: 'normal', signal: new AbortController().signal }),
     generate: (response, config, input = materials, signal = new AbortController().signal) => {
@@ -57,6 +58,35 @@ test('upstream API 7 registers once, imports, and freezes configuration without 
   assert.equal((await f.call('config')).hostReady, true);
   assert.equal((await f.call('config')).generationReady, true);
   for (const key of ['start', 'status', 'cancel']) assert.equal(f.handlers.has('dsh-tavern-stcontext/' + key), false);
+});
+
+test('shared presets are referenced, read fresh for each preparation and frozen for generation', async () => {
+  const id = 'presets/shared.json', source = structuredClone(preset), reads = [];
+  const f = fixture(1, 7, {
+    capabilities: { generationPresets: 1 }, methods: {
+      listGenerationPresets: async () => [{ id, name: 'Shared' }],
+      readGenerationPreset: async selection => {
+        reads.push(selection);
+        return { id, name: 'Shared', revision: 'rev', text: JSON.stringify(source) };
+      },
+    },
+  });
+  assert.deepEqual((await f.call('config')).sharedPresets, [{ id, name: 'Shared' }]);
+  await f.call('settings', { model: { provider: 'fixture', model: 'story', reasoningEffort: 'high' } });
+  await f.call('select', { hostPreset: id });
+  assert.equal(f.saved.hostPreset, id);
+  assert.deepEqual(f.saved.presets, []);
+  const oldConfig = await f.prepare();
+  source.extensions.regex_scripts.find(rule => rule.replaceString === 'XX').replaceString = 'YY';
+  const newConfig = await f.prepare();
+  assert.deepEqual(reads, [{ id }, { id }, { id }]);
+  assert.equal((await f.generate(async () => ({ text: 'X' }), oldConfig)).text, 'XX');
+  assert.equal((await f.generate(async () => ({ text: 'X' }), newConfig)).text, 'YY');
+  await f.call('select', { hostPreset: 'current' });
+  await f.prepare();
+  assert.deepEqual(reads.at(-1), { gameId: 'test' });
+  await importPreset(f);
+  assert.equal((await f.call('config')).hostPreset, null);
 });
 
 test('large presets cross the 2 MiB host snapshot boundary compressed and keep old expanded snapshots usable', async () => {

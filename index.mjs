@@ -17,7 +17,7 @@ export function apply(ctx) {
   const store = createPresetStore(ctx.tavern), previews = new Map();
   const capable = () => ctx.tavern.capabilities?.bodyGeneration === 1 && typeof ctx.tavern.bodyGenerator === 'function';
   const handle = (key, callback) => ctx.tavern.handle(PREFIX + '/' + key, callback);
-  handle('config', async () => ({ ...(await store.list()), hostReady: capable(), generationReady: capable() }));
+  handle('config', async () => ({ ...(await store.list()), ...(await store.listHostPresets()), hostReady: capable(), generationReady: capable() }));
   handle('models', () => listGenerationModels(ctx.llm));
   handle('model-reasoning', input => readGenerationModelReasoning(ctx.llm, input));
   handle('upload/begin', input => store.begin(input));
@@ -37,9 +37,9 @@ export function apply(ctx) {
     return { createdAt: item.createdAt, report: item.report, total: item.json.length, offset, text: item.json.slice(offset, offset + 60000) };
   });
   if (typeof ctx.tavern.onGameRemoved === 'function') ctx.tavern.onGameRemoved(({ gameId }) => previews.delete(gameId));
-  async function prepare({ signal, reason }) {
+  async function prepare({ gameId, signal, reason }) {
     signal?.throwIfAborted();
-    const active = await store.active();
+    const active = await store.active({ gameId });
     signal?.throwIfAborted();
     const report = inspectPreset(active.document, { ...active.settings, trigger: reason === 'normal' ? 'normal' : 'regenerate' });
     if (report.blockers.length) throw new Error(report.blockers.join('；'));
