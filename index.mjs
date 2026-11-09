@@ -53,7 +53,9 @@ export function apply(ctx) {
     selectGenerationModel(active.settings.model);
     const compiled = await runCompiler('compile', { document: active.document, materials: compilerMaterials(materials), settings: active.settings }, { signal });
     const report = { ...compiled.report, preset: active.name, presetDigest: compiled.presetDigest, historyMessages: compiled.historyMessages,
-      operationId: materials.operationId, reason: materials.reason };
+      operationId: materials.operationId, reason: materials.reason,
+      ...(typeof materials.outputProcessing?.hostRegex === 'boolean'
+        ? { outputProcessing: { hostRegex: materials.outputProcessing.hostRegex } } : {}) };
     const json = JSON.stringify({ report, logicalMessages: compiled.logicalMessages, request: compiled.request }, null, 2);
     previews.delete(materials.gameId);
     previews.set(materials.gameId, { json, report, createdAt: Date.now() });

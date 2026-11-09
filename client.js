@@ -513,6 +513,10 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
             requestShown && h('section', { className: 'stc-card stc-request', 'aria-label': '请求预览' },
               h('div', { className: 'stc-card-title' }, h('div', null, h('h3', null, '请求预览'), h('p', { className: 'stc-request-name' }, 'stcontext-request.json')),
                 h('div', { className: 'stc-row' }, h('button', { className: 'stc-button', onClick: () => download('stcontext-request.json', request) }, '下载完整请求'), h('button', { className: 'stc-button stc-quiet', onClick: () => setRequestShown(false) }, '收起'))),
+              typeof report?.outputProcessing?.hostRegex === 'boolean' && h('p', { className: 'stc-muted' },
+                report.outputProcessing.hostRegex
+                  ? 'STcontext 先应用预设输出正则，DSH Tavern 保存正文时再应用宿主正则。两边配置的相同规则可能先后执行。'
+                  : '本轮使用 STcontext 预设输出正则，宿主正则已关闭。'),
               h('pre', null, request))));
         }
         ctx.effect(() => ctx.slots.inject('settings.section', () => ctx.slots.register({

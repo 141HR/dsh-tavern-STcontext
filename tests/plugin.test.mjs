@@ -110,6 +110,20 @@ for (const reason of ['normal', 'regenerate', 'retry']) {
   });
 }
 
+test('request preview reports the host policy while preset output regex stays active', async () => {
+  const f = fixture(); await importPreset(f);
+  const config = await f.prepare();
+  for (const hostRegex of [true, false, undefined]) {
+    const input = { ...materials, ...(hostRegex === undefined ? {} : { outputProcessing: { hostRegex } }) };
+    assert.deepEqual(await f.generate(async () => ({ text: 'X' }), config, input), { text: 'XX' });
+    const preview = await f.call('request', { gameId: materials.gameId });
+    assert.equal(preview.report.outputProcessing?.hostRegex, hostRegex);
+    const decoded = JSON.parse(preview.text);
+    assert.equal(decoded.report.outputProcessing?.hostRegex, hostRegex);
+    assert.equal(Object.hasOwn(decoded.request, 'outputProcessing'), false);
+  }
+});
+
 test('prepared preset/model survive selection changes and removal until the next operation', async () => {
   const f = fixture(); await importPreset(f);
   const firstId = (await f.call('config')).activeId, frozen = JSON.parse(JSON.stringify(await f.prepare()));
