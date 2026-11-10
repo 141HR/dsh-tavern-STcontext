@@ -11,8 +11,9 @@ const simplePreset = { prompts: [{ identifier: 'chatHistory', marker: true }],
 
 // Drive the real client and host entry with a tiny hook scheduler; no DOM or framework dependency.
 function harness({ hostReady = true, initialModel, initialSettings = {}, catalogFailure = false, resolveModelInfo, getStorageLimits } = {}) {
-  const hooks = [], effects = [], pending = new Set(), timers = new Map(), calls = [], downloads = [], disposers = [];
-  let cursor = 0, dirty = true, tree, component, properties, panel, action, overlay, registered, settingsSection, settingsSpec, saved, serial = 0;
+  const hooks = [], effects = [], pending = new Set(), timers = new Map(), calls = [], downloads = [], disposers = [], inputEntries = [];
+  const turnWatchers = new Map();
+  let cursor = 0, dirty = true, tree, component, properties, panel, action, overlay, registered, settingsSection, settingsSpec, dockSection, dockSpec, saved, serial = 0;
   const handlers = new Map();
   saved = { schemaVersion: 1, presets: [], activeId: null, settings: { ...initialSettings, ...(initialModel === undefined ? {} : { model: initialModel }) } };
   let modelFailure = catalogFailure;
@@ -58,6 +59,11 @@ function harness({ hostReady = true, initialModel, initialSettings = {}, catalog
       pending.add(promise); promise.then(() => pending.delete(promise), () => pending.delete(promise));
       return promise;
     },
+    setInput: entry => { inputEntries.push(structuredClone(entry)); },
+    watchTurnState: (sessionId, cb) => {
+      turnWatchers.set(sessionId, cb);
+      return () => turnWatchers.delete(sessionId);
+    },
     registerPanel: entry => { panel = entry; }, registerComposerAction: entry => { action = entry; }, openOverlay: entry => { overlay = entry; },
   };
   const blobs = new Map();
@@ -71,10 +77,20 @@ function harness({ hostReady = true, initialModel, initialSettings = {}, catalog
     tavernUi: ui,
     effect: run => { disposers.push(run()); },
     slots: {
-      inject: (name, run) => { assert.equal(name, 'settings.section'); return run(); },
+      inject: (name, run) => {
+        assert.ok(name === 'settings.section' || name === 'conversation.input.dock', 'allowed slot name');
+        return run();
+      },
       register: (spec, render) => {
-        assert.equal(spec.name, 'settings.section'); settingsSpec = spec; settingsSection = render;
-        return () => { settingsSpec = null; settingsSection = null; };
+        if (spec.name === 'settings.section') {
+          settingsSpec = spec; settingsSection = render;
+          return () => { settingsSpec = null; settingsSection = null; };
+        }
+        if (spec.name === 'conversation.input.dock') {
+          dockSpec = spec; dockSection = render;
+          return () => { dockSpec = null; dockSection = null; };
+        }
+        assert.fail('Unexpected register spec: ' + spec.name);
       },
     },
   });
@@ -97,16 +113,25 @@ function harness({ hostReady = true, initialModel, initialSettings = {}, catalog
   }
   const contents = node => typeof node === 'string' || typeof node === 'number' ? String(node) : node?.type === 'style' ? '' : (node?.children || []).map(contents).join('');
   return {
-    calls, downloads,
+    calls, downloads, inputEntries,
     host: (name, input) => ui.callHost('dsh-tavern-stcontext/' + name, input),
     get settingsSpec() { return settingsSpec; },
+    get dockSpec() { return dockSpec; },
+    setSuggestions: items => {
+      handlers.set('dsh-tavern-stcontext/suggestions', async () => items ? { gameId: 'game', items } : null);
+    },
+    notifyTurnState: (sessionId, state) => {
+      const cb = turnWatchers.get(sessionId);
+      if (cb) cb(state);
+    },
     get saved() { return structuredClone(saved); }, set modelFailure(value) { modelFailure = value; },
     async mount(useAction = false) {
       let element;
       if (useAction === 'settings') element = settingsSection();
+      else if (useAction === 'dock') element = dockSection ? dockSection({ sessionId: 'game' }) : null;
       else if (useAction) { await action.run({ gameId: 'game' }); element = overlay.render({ close() {} }); }
       else element = panel.render({ gameId: 'game' });
-      component = element.type; properties = element.props; await flush();
+      component = element ? element.type : () => null; properties = element ? element.props : {}; await flush();
     },
     async input(file) { const target = { files: [file], value: 'selected.json' }; nodes().find(node => node.type === 'input' && node.props.type === 'file').props.onChange({ target }); assert.equal(target.value, ''); await flush(); },
     async click(label) { const element = nodes().find(node => node.type === 'button' && contents(node) === label); assert.ok(element, label); assert.ok(!element.props.disabled, label + ' must be enabled'); await element.props.onClick(); await flush(); },
@@ -470,3 +495,38 @@ test('late capability responses cannot enable reasoning for a subsequently selec
     assert.deepEqual(h.saved.settings.model, { provider: 'own', model: 'other' });
   } finally { finish({ id: 'story' }); h.destroy(); }
 });
+
+test('suggestions dock registers in input slot, renders action chips and invokes setInput', async () => {
+  const h = harness();
+  try {
+    assert.ok(h.dockSpec, 'dockSpec should be registered');
+    assert.equal(h.dockSpec.name, 'conversation.input.dock');
+    assert.equal(h.dockSpec.id, 'dsh-tavern-stcontext-suggestions');
+
+    // Initially no suggestions, dock renders nothing
+    await h.mount('dock');
+    assert.equal(h.text(), '');
+
+    // Host updates suggestions when a turn finishes
+    h.setSuggestions([
+      { label: '1. 调查走廊', text: '调查走廊' },
+      { label: '2. 留在原地', text: '留在原地' },
+    ]);
+    h.notifyTurnState('game', { running: false });
+    await h.flush();
+
+    assert.match(h.text(), /💡 剧情建议/);
+    assert.match(h.text(), /调查走廊/);
+    assert.match(h.text(), /留在原地/);
+
+    // Click a suggestion chip -> ui.setInput is called
+    await h.click('1. 调查走廊');
+    assert.deepEqual(h.inputEntries, [{ gameId: 'game', text: '调查走廊' }]);
+
+    // Click close button -> dismissed
+    await h.click('×');
+    assert.equal(h.text(), '');
+    assert.ok(h.calls.some(call => call.name === 'suggestions/clear'));
+  } finally { h.destroy(); }
+});
+

@@ -60,6 +60,18 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
 .stc-panel .stc-primary{background:var(--stc-accent);border-color:var(--stc-accent);color:#fff;font-weight:600;min-height:42px;padding:10px 18px}
 .stc-panel .stc-primary:hover:not(:disabled){background:var(--stc-accent);filter:brightness(1.1)}
 .stc-panel .stc-quiet{border-color:transparent;font-size:12px;color:var(--stc-muted);padding:5px 8px;min-height:30px}
+.stc-dock{box-sizing:border-box;display:flex;flex-direction:column;gap:6px;width:100%;max-width:100%;padding:8px 12px;margin:0 0 6px 0;border-radius:10px;background:var(--dsw-specific-input-major,#fff);border:1px solid var(--dsw-alias-border-l2,#e3e4eb);font-size:13px;line-height:1.4}
+body[data-ds-dark-theme] .stc-dock{background:var(--dsw-specific-input-major,#24252d);border-color:var(--dsw-alias-border-l2,#3d3e48)}
+.stc-dock-header{display:flex;align-items:center;justify-content:space-between;gap:8px;color:var(--dsw-alias-label-secondary,#717583);font-size:11px;font-weight:600}
+.stc-dock-title{display:flex;align-items:center;gap:5px}
+.stc-dock-close{background:transparent;border:none;color:inherit;cursor:pointer;padding:2px 6px;border-radius:4px;font-size:14px;line-height:1}
+.stc-dock-close:hover{background:rgba(127,127,127,.15)}
+.stc-dock-chips{display:flex;flex-wrap:wrap;gap:6px}
+.stc-chip{display:inline-flex;align-items:center;gap:5px;padding:5px 11px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2,#e3e4eb);background:var(--dsh-tavern-accent-soft,#eeedf9);color:var(--dsw-alias-label-primary,inherit);font-size:12px;line-height:1.3;cursor:pointer;transition:all .15s ease;max-width:100%;text-align:left}
+body[data-ds-dark-theme] .stc-chip{background:var(--dsh-tavern-accent-soft,#303047);border-color:var(--dsw-alias-border-l2,#3d3e48)}
+.stc-chip:hover{border-color:var(--dsh-tavern-accent,#5956c9);color:var(--dsh-tavern-accent,#5956c9);background:var(--dsw-specific-input-major,#fff);box-shadow:0 1px 4px rgba(0,0,0,.06)}
+body[data-ds-dark-theme] .stc-chip:hover{background:var(--dsw-specific-input-major,#24252d);color:#bbb7ff}
+.stc-chip:active{transform:scale(.98)}
 .stc-panel .stc-danger{color:var(--dsh-tavern-accent-error,#c54f4f)}
 .stc-panel .stc-badge{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:6px;background:var(--stc-soft);color:var(--stc-highlight);font-size:11px;white-space:nowrap}
 .stc-panel .stc-badge-neutral{background:rgba(128,128,144,.09);color:var(--stc-muted)}
@@ -543,9 +555,79 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
                   : '本轮使用 STcontext 预设输出正则，宿主正则已关闭。'),
               h('pre', null, request))));
         }
+        function SuggestionsDock(props) {
+          const sessionId = props.sessionId || '';
+          const [data, setData] = React.useState(null);
+          const [dismissed, setDismissed] = React.useState(false);
+
+          React.useEffect(() => {
+            let active = true;
+            if (!sessionId) { setData(null); return; }
+            call('suggestions', { gameId: sessionId }).then(res => {
+              if (active && res && Array.isArray(res.items) && res.items.length) {
+                setData(res);
+                setDismissed(false);
+              } else if (active) {
+                setData(null);
+              }
+            }).catch(() => {});
+            const stopWatch = typeof ui.watchTurnState === 'function' ? ui.watchTurnState(sessionId, state => {
+              if (active && state && !state.running) {
+                call('suggestions', { gameId: sessionId }).then(res => {
+                  if (active && res && Array.isArray(res.items) && res.items.length) {
+                    setData(res);
+                    setDismissed(false);
+                  } else if (active) {
+                    setData(null);
+                  }
+                }).catch(() => {});
+              }
+            }) : undefined;
+            return () => {
+              active = false;
+              if (typeof stopWatch === 'function') stopWatch();
+            };
+          }, [sessionId]);
+
+          if (!data || dismissed || !Array.isArray(data.items) || !data.items.length) return null;
+
+          return h('section', { className: 'stc-dock', 'aria-label': '剧情行动建议' },
+            h('div', { className: 'stc-dock-header' },
+              h('span', { className: 'stc-dock-title' }, '💡 剧情建议（点击填入输入框）'),
+              h('button', {
+                type: 'button',
+                className: 'stc-dock-close',
+                'aria-label': '关闭建议',
+                onClick: () => {
+                  setDismissed(true);
+                  call('suggestions/clear', { gameId: sessionId }).catch(() => {});
+                },
+              }, '×')
+            ),
+            h('div', { className: 'stc-dock-chips' },
+              ...data.items.map((item, idx) => h('button', {
+                key: idx,
+                type: 'button',
+                className: 'stc-chip',
+                title: item.text,
+                onClick: () => {
+                  if (typeof ui.setInput === 'function') {
+                    try { ui.setInput({ gameId: sessionId, text: item.text }); }
+                    catch (_) {}
+                  }
+                },
+              }, item.label))
+            )
+          );
+        }
         ctx.effect(() => ctx.slots.inject('settings.section', () => ctx.slots.register({
           name: 'settings.section', id: 'dsh-tavern-stcontext', order: 115, label: () => 'STcontext',
         }, () => h(Panel, { settingsPage: true }))), 'STcontext: settings section');
+        if (ctx.slots && typeof ctx.slots.inject === 'function') {
+          ctx.effect(() => ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
+            name: 'conversation.input.dock', id: 'dsh-tavern-stcontext-suggestions', order: -105, label: () => '剧情建议',
+          }, props => h(SuggestionsDock, { sessionId: props?.sessionId }))), 'STcontext: suggestions dock');
+        }
         ui.registerPanel({ id: 'st-context', title: 'STcontext', render: ({ gameId }) => h(Panel, { gameId }) });
         ui.registerComposerAction({
           id: 'regenerate', label: 'STcontext',

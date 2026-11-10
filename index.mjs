@@ -14,7 +14,7 @@ const PREFIX = 'dsh-tavern-stcontext';
 const PROVIDER = 'st-context';
 export function apply(ctx) {
   const generateBody = createDshGeneration({ llm: ctx.llm, meter: ctx.get('tokenMeter'), protocolTransport: createProtocolTransport(ctx) });
-  const store = createPresetStore(ctx.tavern), previews = new Map();
+  const store = createPresetStore(ctx.tavern), previews = new Map(), suggestions = new Map();
   const capable = () => ctx.tavern.capabilities?.bodyGeneration === 1 && typeof ctx.tavern.bodyGenerator === 'function';
   const handle = (key, callback) => ctx.tavern.handle(PREFIX + '/' + key, callback);
   handle('config', async () => ({ ...(await store.list()), ...(await store.listHostPresets()), hostReady: capable(), generationReady: capable() }));
@@ -30,13 +30,18 @@ export function apply(ctx) {
   handle('remove', input => store.remove(input));
   handle('export', input => store.export(input));
   handle('settings', input => store.settings(input));
+  handle('suggestions', async ({ gameId }) => suggestions.get(gameId) || null);
+  handle('suggestions/clear', async ({ gameId }) => { suggestions.delete(gameId); return { ok: true }; });
   handle('request', async ({ gameId, offset = 0 }) => {
     const item = previews.get(gameId);
     if (!item) return null;
     if (!Number.isSafeInteger(offset) || offset < 0 || offset > item.json.length) throw new Error('请求预览位置无效');
     return { createdAt: item.createdAt, report: item.report, total: item.json.length, offset, text: item.json.slice(offset, offset + 60000) };
   });
-  if (typeof ctx.tavern.onGameRemoved === 'function') ctx.tavern.onGameRemoved(({ gameId }) => previews.delete(gameId));
+  if (typeof ctx.tavern.onGameRemoved === 'function') ctx.tavern.onGameRemoved(({ gameId }) => {
+    previews.delete(gameId);
+    suggestions.delete(gameId);
+  });
   async function prepare({ gameId, signal, reason }) {
     signal?.throwIfAborted();
     const active = await store.active({ gameId });
@@ -65,6 +70,16 @@ export function apply(ctx) {
     const result = await runCompiler('output', { document: active.document, response, helperState: compiled.helperState,
       toolNames: (compiled.request.tools || []).map(tool => tool.name) }, { signal });
     signal?.throwIfAborted();
+    if (result.suggestions && result.suggestions.length) {
+      suggestions.set(materials.gameId, {
+        gameId: materials.gameId,
+        items: result.suggestions,
+        updatedAt: Date.now(),
+      });
+      while (suggestions.size > 20) suggestions.delete(suggestions.keys().next().value);
+    } else {
+      suggestions.delete(materials.gameId);
+    }
     return { text: result.text };
   }
   if (capable()) {
