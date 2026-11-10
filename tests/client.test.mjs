@@ -64,7 +64,7 @@ function harness({ hostReady = true, initialModel, initialSettings = {}, catalog
   vm.runInNewContext(source, {
     window: { __ModuleLoader__: { load: value => { registered = value; } } },
     setTimeout: (fn, delay) => { const id = ++serial; timers.set(id, { fn, delay }); return id; }, clearTimeout: id => timers.delete(id),
-    Blob, URL: { createObjectURL: blob => { const key = 'blob:' + serial++; blobs.set(key, blob); return key; }, revokeObjectURL: key => blobs.delete(key) },
+    Blob, TextEncoder, URL: { createObjectURL: blob => { const key = 'blob:' + serial++; blobs.set(key, blob); return key; }, revokeObjectURL: key => blobs.delete(key) },
     document: { createElement: () => ({ click() { downloads.push({ name: this.download, blob: blobs.get(this.href) }); } }) },
   });
   registered.factory(name => { assert.equal(name, 'react'); return React; }).apply({
@@ -112,6 +112,7 @@ function harness({ hostReady = true, initialModel, initialSettings = {}, catalog
     async click(label) { const element = nodes().find(node => node.type === 'button' && contents(node) === label); assert.ok(element, label); assert.ok(!element.props.disabled, label + ' must be enabled'); await element.props.onClick(); await flush(); },
     async field(label, value) { const node = nodes().find(node => ['input', 'textarea', 'select'].includes(node.type) && node.props['aria-label'] === label); assert.ok(node, label); assert.ok(!node.props.disabled); node.props.onChange({ target: { value, checked: value } }); await flush(); },
     fieldValue: label => nodes().find(node => node.props?.['aria-label'] === label)?.props.value,
+    checkbox: label => nodes().find(node => node.type === 'input' && node.props.type === 'checkbox' && node.props['aria-label'] === label)?.props,
     async labeledClick(label) { const node = nodes().find(node => node.type === 'button' && node.props['aria-label'] === label); assert.ok(node); assert.ok(!node.props.disabled); node.props.onClick(); await flush(); },
     numberInputs: () => nodes().filter(node => node.type === 'input' && node.props.type === 'number').length,
     async choose(label, value, settle = true) { const node = nodes().find(node => node.type === 'select' && node.props['aria-label'] === label); assert.ok(node, label); assert.ok(!node.props.disabled); node.props.onChange({ target: { value } }); if (settle) await flush(); else render(); },
@@ -124,6 +125,33 @@ function harness({ hostReady = true, initialModel, initialSettings = {}, catalog
   };
 }
 const file = (text, name = 'imported.json') => ({ name, size: Buffer.byteLength(text), text: async () => text });
+
+test('helper editor follows nested folder enablement and preserves script data', async () => {
+  const h = harness();
+  const document = { ...simplePreset, extensions: { tavern_helper: { scripts: [null,
+    { type: 'folder', name: '目录', scripts: [
+      { id: 'child', name: '脚本', enabled: true, content: 'console.info("中文");', custom: 42 },
+      { type: 'folder', name: '子目录', enabled: false, scripts: [{ id: 'nested', enabled: true, content: 'void 0;' }] },
+    ] },
+  ] } } };
+  try {
+    await h.mount('settings'); await h.input(file(JSON.stringify(document)));
+    await h.click('编辑预设'); await h.click('助手脚本');
+    assert.equal(h.checkbox('启用 目录').checked, true);
+    assert.equal(h.checkbox('启用 目录 / 脚本').checked, true);
+    assert.equal(h.checkbox('启用 目录 / 子目录 / nested').disabled, true);
+    await h.field('启用 目录', false);
+    assert.equal(h.checkbox('启用 目录 / 脚本').disabled, true);
+    await h.field('启用 目录', true);
+    await h.field('启用 目录 / 脚本', false);
+    await h.click('保存预设');
+    const saved = JSON.parse(decodePreset(h.saved.presets[0].data));
+    assert.deepEqual(saved.extensions.tavern_helper.scripts[1].scripts[0], {
+      ...document.extensions.tavern_helper.scripts[1].scripts[0], enabled: false,
+    });
+    assert.deepEqual(saved.extensions.tavern_helper.scripts[1].scripts[1], document.extensions.tavern_helper.scripts[1].scripts[1]);
+  } finally { h.destroy(); }
+});
 
 test('10 MiB import and export use bounded RPC chunks; oversized imports and edited drafts stay unsaved', async () => {
   const h = harness({ getStorageLimits: () => ({ maxBytes: 256 * 1024 * 1024 }) });

@@ -1,3 +1,4 @@
+import { bundledHelper } from './fixtures/bundled-helper.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -5,6 +6,7 @@ import { compilePreset, inspectPreset, processOutput } from '../lib/preset.mjs';
 import { compilerMaterials } from '../lib/materials.mjs';
 import { runCompiler } from '../lib/worker-client.mjs';
 import { materials, preset } from './fixtures/materials.mjs';
+import { unavailableBackendRoutes, MAX_REPORTED_BACKEND_ROUTES } from '../lib/helper.mjs';
 
 const settings = { model: { provider: 'fixture', model: 'story' } };
 const doc = (...scripts) => ({ ...structuredClone(preset), extensions: { ...structuredClone(preset.extensions),
@@ -190,4 +192,77 @@ test('Meowssiah bootstrap compiles original tool history, required choice and si
   assert.equal(compiled.request.messages.flatMap(m => m.tool_calls || []).length, 2);
   assert.ok(compiled.request.messages.filter(m => m.tool_calls).every(m => m.tool_calls[0].signature === 'skip_thought_signature_validator'));
   assert.ok(output(document, compiled, { toolCalls: [{ name: 'soliumbra_reply', arguments: '{"game_content":"测试正文"}' }] }).text.includes('测试正文'));
+});
+
+test('bundled UI + hook helper scripts run in sandbox with inert DOM, ToolManager and opaque host materials', () => {
+  const document = doc(bundledHelper);
+  document.prompts.push(
+    { identifier: 'tool-switch', name: '🔧结构化输出开关', role: 'system', content: '启用工具[ANTI_ROUTE_TAG]' },
+  );
+  document.prompt_order[0].order.push({ identifier: 'tool-switch', enabled: true });
+  const report = inspectPreset(document);
+  assert.equal(report.blockers.length, 0);
+  assert.equal(report.scripts[0].bundled, true);
+  assert.equal(report.scripts[0].kind, 'bundled');
+
+  const data = compilerMaterials(materials);
+  data.history.push({ role: 'user', text: '包含敏感词的历史消息' });
+  const compiled = compilePreset(document, data, settings);
+  const wire = JSON.stringify(compiled.request.messages);
+  assert.doesNotMatch(wire, /ANTI_ROUTE_TAG/);
+  assert.match(wire, /<!-- anti-route -->/);
+  assert.ok(wire.includes('包含敏感词的历史消息'));
+  assert.ok(!wire.includes('包含ㄇㄧㄣˇ ㄍㄢˇ ㄘˊ的历史消息'));
+  assert.equal(compiled.request.tools?.length, 1);
+  assert.equal(compiled.request.tools[0].name, 'structured_reply');
+
+  const restored = output(document, compiled, {
+    toolCalls: [{ id: 'c1', name: 'structured_reply', arguments: JSON.stringify({ content: '回复中的ㄇㄧㄣˇ ㄍㄢˇ ㄘˊ已还原X' }) }],
+  });
+  assert.equal(restored.text, '回复中的敏感词已还原XX');
+});
+
+test('backend route scan reports only unsupported same-origin /api/ literals, deduplicated and sorted', () => {
+  const source = [
+    `const a = '/api/worldinfo/edit'; const b = "/api/chats/get"; const c = \`/api/chats/get\`;`,
+    `const ok = '/api/backends/chat-completions/generate';`,
+    `const nested = '/api/backends/chat-completions/generate/extra';`,
+    `const dyn = \`/api/characters/\${id}\`; const trailing = '/api/settings/get/';`,
+    `const prose = 'see the /api/ docs'; const bare = '/api/'; const other = '/apiary/x'; const url = 'https://example.com/api/x';`,
+  ].join('\n');
+  assert.deepEqual(unavailableBackendRoutes(source), [
+    '/api/backends/chat-completions/generate/extra', '/api/characters', '/api/chats/get', '/api/settings/get', '/api/worldinfo/edit',
+  ]);
+  assert.deepEqual(unavailableBackendRoutes(''), []);
+  assert.deepEqual(unavailableBackendRoutes(undefined), []);
+});
+
+test('bundled helper reports unavailable tavern backend routes in the import report without blocking', () => {
+  const bundle = (extra) => [
+    `(() => {`,
+    `  const panel = document.createElement('div'); document.body.appendChild(panel);`,
+    `  const ctx = SillyTavern.getContext();`,
+    `  ctx.eventSource.on(ctx.eventTypes.CHAT_COMPLETION_PROMPT_READY, () => {});`,
+    extra,
+    `})();`,
+  ].join('\n');
+  const withRoutes = inspectPreset(doc(bundle(`fetch('/api/chats/get', { method: 'POST' }); fetch('/api/worldinfo/edit', { method: 'POST' });`)));
+  assert.equal(withRoutes.blockers.length, 0);
+  const warning = withRoutes.warnings.find(text => text.includes('酒馆后端接口'));
+  assert.ok(warning, 'missing backend route warning');
+  assert.match(warning, /\/api\/chats\/get/);
+  assert.match(warning, /\/api\/worldinfo\/edit/);
+  assert.match(warning, /静态引用扫描/);
+
+  const generateOnly = inspectPreset(doc(bundle(`fetch('/api/backends/chat-completions/generate', { method: 'POST' });`)));
+  assert.equal(generateOnly.warnings.some(text => text.includes('酒馆后端接口')), false);
+
+  const none = inspectPreset(doc(bundle('')));
+  assert.equal(none.warnings.some(text => text.includes('酒馆后端接口')), false);
+
+  const many = Array.from({ length: MAX_REPORTED_BACKEND_ROUTES + 3 }, (_, i) => `'/api/route${String(i).padStart(2, '0')}'`).join(', ');
+  const capped = inspectPreset(doc(bundle(`void [${many}];`)));
+  const cappedWarning = capped.warnings.find(text => text.includes('酒馆后端接口'));
+  assert.match(cappedWarning, new RegExp('等 ' + (MAX_REPORTED_BACKEND_ROUTES + 3) + ' 个'));
+  assert.equal((cappedWarning.match(/\/api\/route\d\d/g) || []).length, MAX_REPORTED_BACKEND_ROUTES);
 });

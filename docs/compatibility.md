@@ -39,7 +39,7 @@
 
 SPreset 函数可以是普通函数或箭头函数，支持能够在预算内完成的纯 JavaScript Promise。没有异步 I/O、定时器或宿主函数桥接；悬空 Promise 会失败。SPreset 函数之间不能通过 globalThis 传递状态，只能通过阶段输出传递数据。助手脚本的临时上下文在同次虚拟请求内共享，独立于这些函数。console 是不输出、不存储日志的空实现。
 
-工具声明关联的提示词必须启用，并满足当前 normal/regenerate 触发条件。SPreset ToolBindings 需要 consumeToolCalls=true 和 toolCallFormatter；助手请求拦截器可以自行声明并解包输出工具。未消费的工具必须交给显式 SPreset 格式化器，否则拒绝正文。action、actionBody、formatMessageBody、stealth 等执行/展示行为不运行，最终显示由输出格式化器和宿主负责。
+工具声明关联的提示词必须启用，并满足当前 normal/regenerate 触发条件。SPreset ToolBindings 需要 consumeToolCalls=true 和 toolCallFormatter；助手请求拦截器可以自行声明并解包输出工具。未消费的工具必须交给显式 SPreset 格式化器，否则拒绝正文。SPreset 工具声明中的 action、actionBody、formatMessageBody、stealth 等执行/展示行为不运行，最终显示由输出格式化器和宿主负责。
 
 ## 受限酒馆助手接口
 
@@ -47,15 +47,25 @@ SPreset 函数可以是普通函数或箭头函数，支持能够在预算内完
 
 | 接口 | 实现范围 |
 | --- | --- |
-| eventOn/Once/MakeFirst/MakeLast、stop、移除、清空、eventEmit | 按注册顺序等待 Promise；自动触发上列三个事件，其他自定义事件可手动发送；未触发事件会诊断 |
+| eventOn/Once/MakeFirst/MakeLast、stop、移除、清空、eventEmit | 按注册顺序等待 Promise；触发 GENERATION_STARTED、GENERATION_AFTER_COMMANDS（有监听或打包脚本）、CHAT_COMPLETION_PROMPT_READY、CHAT_COMPLETION_SETTINGS_READY；回包后触发 MESSAGE_RECEIVED；其他未触发事件会诊断 |
 | registerMacroLike/unregisterMacroLike | 处理预设文本；自定义 `{{...}}` 可延迟到请求钩子，最终残留则失败 |
 | getVariables/replaceVariables/insertOrAssignVariables/updateVariablesWith | chat/global/preset/script 本次内存表，初始 chat/global 为预设宏变量；不是宿主存档变量；script 以脚本 ID 隔离 |
-| getScriptId、getPreset('in_use')、getChatMessages、SillyTavern.getContext | 当前预设和可见聊天的副本；预设使用助手的 settings/prompts/prompts_unused 结构，只提供已知映射的设置；聊天支持数字/范围、负数索引和 role/hide_state 筛选，include_swipes=true 明确拒绝；不提供存档写入接口 |
-| window/parent/top、ready、pagehide | 全部指向私有 QuickJS 全局，ready 初始化、回包结束 pagehide；没有真实 DOM 或 iframe |
+| getScriptId、getPreset('in_use')、getChatMessages、SillyTavern.getContext | 当前预设和可见聊天的副本；预设使用助手的 settings/prompts/prompts_unused 结构，只提供已知映射的设置；聊天支持数字/范围、负数索引和 role/hide_state 筛选，include_swipes 明确拒绝（打包脚本可捕获错误）；不提供存档写入接口。`SillyTavern.getContext().ToolManager` 支持 `registerFunctionTool`/`unregisterFunctionTool` 注册输出工具 |
+| window/parent/top、ready、pagehide、DOM/UI 桩 | 全部指向私有 QuickJS 全局，ready 初始化、回包结束 pagehide；打包脚本挂载的 DOM/jQuery/CSS/UI 以内存桩运行，外部网络请求与外部 `<script>` 加载明确拦截 |
 | fetch、Request/Response/Headers、ReadableStream、UTF-8 编解码 | 仅供本次 `/api/backends/chat-completions/generate` 虚拟 POST；完整 JSON 回包，不提供网络与 SSE；其他 URL、额外请求、凭据及传输选项明确拒绝 |
 | localStorage | 每次执行独立的内存表，不访问浏览器存储，不跨生成保存 |
 
-脚本正文是非模块 JavaScript，支持内部纯异步函数；import、第三方库、UI、定时器等未实现的 API 不自动补齐。最多 32 个启用脚本、每个 256 KiB；整组助手初始化/请求或回包处理各有 1500 ms 时限。父 Worker 的取消及超时仍有效。
+脚本正文是非模块 JavaScript，支持内部纯异步函数。最多 32 个启用脚本；普通助手脚本每个不超过 256 KiB；包含 UI/DOM 挂载与生成期事件/ToolManager 的打包型助手脚本单脚本上限放宽至 4 MiB，其浏览器 UI 与定时器以惰性内存桩运行，仅生效生成期事件、ToolManager 工具与回复后处理。整组助手初始化/请求或回包处理各有 1800 ms 时限。父 Worker 的取消及超时仍有效。
+
+打包型脚本中以字符串字面量出现的同源 `/api/...` 路径（除虚拟生成接口 `/api/backends/chat-completions/generate` 外）会在导入报告中以警告列出，如记忆/世界书编辑、聊天回读等依赖酒馆后端的接口。运行时对这些路径的 `fetch` 抛出可捕获的「本地管理接口未启用」错误，脚本通常会自行降级。该检查只做静态引用扫描，不能证明路径一定被调用（脚本可能只是打包了引用它的库代码），也不会阻止保存或生成；报告最多列出 12 个路径并注明总数。
+
+ToolManager 输出工具使用以下契约：
+
+- 注册时冻结工具定义并校验受支持的 JSON Schema。支持 type（含类型数组）、enum/const、对象 properties/required/additionalProperties、数组 items/uniqueItems、字符串 pattern/长度、数值范围/multipleOf、容器数量及 allOf/anyOf/oneOf/not。title/description/default/examples 等仅作注释；$ref、format 等未实现的关键字在模型调用前明确拒绝，不声称支持完整 JSON Schema。
+- shouldRegister 可以是同步或纯异步函数；它和 action 在注册脚本的变量作用域中运行。所有属于 ToolManager 的调用先校验参数，再执行 action；action 只在 QuickJS 内处理本次数据，不能写入宿主。
+- action 返回非空字符串时使用该正文，否则从 content 或唯一必填字符串参数提取；任何一个调用无法产生正文都会失败。原有文本与多个工具正文按调用顺序用两个换行拼接。
+- 仅消费属于本次请求的 ToolManager 调用，其余调用原样交给 SPreset。SPreset 格式化器通过 calls 接收剩余调用，通过 defaultText 接收已生成的正文。fetch 包装器已经消费的调用不再执行 action；透明转发不会禁用 ToolManager。
+- 提示词钩子每个阶段只执行一次，使用不透明材料；禁止通过第二次钩子执行改写历史。异步初始化需返回 Promise 或注册 ready 回调；不通过固定次数的微任务等待猜测初始化完成。依赖真实 DOM、私有桥接、定时器回调或材料文本清洗的预设不保证兼容。
 
 材料在来源仍可区分时转为不透明引用，预设模板单独处理；即使没有助手脚本，历史、输入和世界书中的字面 `{{user}}`、`{{char}}` 也不会再次展开。能明确定位原文时保留输入包装标记；仅允许在消息正文/工具描述恢复，随后检查每次材料出现是否完整。因此助手不会按材料中的模板、控制标签或空白重新解释历史；需要读取/编码材料正文的助手逻辑与原 ST 行为可能不同。
 

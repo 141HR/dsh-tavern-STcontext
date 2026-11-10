@@ -16,6 +16,20 @@ window.__ModuleLoader__.load({
         const clone = value => JSON.parse(JSON.stringify(value));
         const markerIds = new Set(['worldInfoBefore', 'worldInfoAfter', 'personaDescription', 'charDescription', 'charPersonality', 'scenario', 'dialogueExamples', 'chatHistory']);
         const orderOf = doc => doc.prompt_order.find(group => Number(group.character_id) === 100001) || (doc.prompt_order.length === 1 ? doc.prompt_order[0] : null);
+        function helperRows(items, path = [], parents = [], disabled = false) {
+          if (!Array.isArray(items)) return [];
+          return items.flatMap((item, index) => {
+            if (!item || typeof item !== 'object') return [];
+            const folder = item.type === 'folder' && Array.isArray(item.scripts);
+            const name = String(item.name || item.id || (folder ? '文件夹 ' : '脚本 ') + (index + 1));
+            const entryPath = [...path, index], names = [...parents, name];
+            const children = folder ? helperRows(item.scripts, [...entryPath, 'scripts'], names, disabled || item.enabled === false) : [];
+            const bytes = folder ? children.filter(row => !row.folder).reduce((sum, row) => sum + row.bytes, 0)
+              : new TextEncoder().encode(String(item.content || '')).byteLength;
+            return [{ path: entryPath, name: names.join(' / '), folder, disabled, bytes,
+              enabled: folder ? item.enabled !== false : item.enabled === true }, ...children];
+          });
+        }
         function editorDocument(text) {
           const doc = JSON.parse(text);
           if (!doc || !Array.isArray(doc.prompts) || !doc.prompts.length || !Array.isArray(doc.prompt_order) || doc.prompt_order.some(group => !group || !Array.isArray(group.order))
@@ -267,6 +281,7 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
             const inOrder = prompt && order.find(item => item.identifier === prompt.identifier);
             const regexes = Array.isArray(doc.extensions?.regex_scripts) ? doc.extensions.regex_scripts : [];
             const rule = regexes[editor.regexIndex];
+            const scripts = editor.tab === 'scripts' ? helperRows(doc.extensions?.tavern_helper?.scripts) : [];
             const button = (label, onClick, disabled = false, extra = {}) => h('button', { type: 'button', className: 'stc-button', disabled: busy || disabled, onClick, ...extra }, label);
             const field = (label, value, onChange, options = {}) => h('label', { className: 'stc-field' }, label,
               h(options.multiline ? 'textarea' : 'input', { className: 'stc-select' + (options.code ? ' stc-code' : ''), 'aria-label': label,
@@ -305,7 +320,7 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
               h('fieldset', { disabled: busy, className: 'stc-editor-form' },
                 field('预设名称', editor.name, name => setEditor({ ...editor, name, dirty: true, error: '' }), { maxLength: 160 }),
                 h('div', { className: 'stc-editor-tabs', role: 'tablist', 'aria-label': '预设编辑分类' },
-                  ...[['prompts', '提示词'], ['regex', '正则规则'], ['json', '完整 JSON']].map(([id, label]) =>
+                  ...[['prompts', '提示词'], ['regex', '正则规则'], ['scripts', '助手脚本'], ['json', '完整 JSON']].map(([id, label]) =>
                     button(label, () => changeTab(id), false, { key: id, role: 'tab', 'aria-selected': editor.tab === id }))),
                 h('div', { role: 'tabpanel', className: 'stc-editor-form', 'aria-label': '预设编辑内容' },
                 editor.tab === 'prompts' && h('div', { className: 'stc-editor-layout' },
@@ -357,6 +372,16 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
                       setEditor(current => ({ ...current, regexIndex: current.regexIndex + delta }));
                     }, editor.regexIndex + delta < 0 || editor.regexIndex + delta >= regexes.length, { key: delta })),
                     button('删除正则', () => { changeDocument(next => { next.extensions.regex_scripts.splice(editor.regexIndex, 1); }); setEditor(current => ({ ...current, regexIndex: Math.max(0, current.regexIndex - 1) })); })))),
+                editor.tab === 'scripts' && h('div', { className: 'stc-editor-form' },
+                  h('p', { className: 'stc-muted' }, '管理 extensions.tavern_helper.scripts 中的内嵌助手脚本。启用的脚本将在 QuickJS 受限沙箱中执行生成期事件、ToolManager 工具注册与回复后处理。'),
+                  ...(scripts.length
+                    ? scripts.map(item => h('div', { key: item.path.join('.'), className: 'stc-prompt-row' },
+                      check('启用 ' + item.name, item.enabled, value => changeDocument(next => {
+                        const target = item.path.reduce((value, key) => value[key], next.extensions.tavern_helper.scripts);
+                        target.enabled = value;
+                      }), item.disabled),
+                      h('span', { className: 'stc-muted' }, (item.folder ? '文件夹 · ' : '') + formatBytes(item.bytes))))
+                    : [h('p', { key: 'empty', className: 'stc-muted' }, '当前预设未包含内嵌酒馆助手脚本。')])),
                 editor.tab === 'json' && h('div', { className: 'stc-editor-form' },
                   h('p', { className: 'stc-muted' }, '编辑完整预设，包括 SPreset、助手脚本和未映射字段。切换回表单时解析 JSON；校验和保存只做静态检查，不执行脚本或调用模型。'),
                   field('预设 JSON', editor.text, text => setEditor({ ...editor, text, dirty: true, report: null, error: '' }), { multiline: true, code: true, rows: 22 })))),
