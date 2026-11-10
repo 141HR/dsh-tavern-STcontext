@@ -305,7 +305,7 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
               h('fieldset', { disabled: busy, className: 'stc-editor-form' },
                 field('预设名称', editor.name, name => setEditor({ ...editor, name, dirty: true, error: '' }), { maxLength: 160 }),
                 h('div', { className: 'stc-editor-tabs', role: 'tablist', 'aria-label': '预设编辑分类' },
-                  ...[['prompts', '提示词'], ['regex', '正则规则'], ['json', '完整 JSON']].map(([id, label]) =>
+                  ...[['prompts', '提示词'], ['regex', '正则规则'], ['scripts', '助手脚本'], ['json', '完整 JSON']].map(([id, label]) =>
                     button(label, () => changeTab(id), false, { key: id, role: 'tab', 'aria-selected': editor.tab === id }))),
                 h('div', { role: 'tabpanel', className: 'stc-editor-form', 'aria-label': '预设编辑内容' },
                 editor.tab === 'prompts' && h('div', { className: 'stc-editor-layout' },
@@ -357,6 +357,16 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
                       setEditor(current => ({ ...current, regexIndex: current.regexIndex + delta }));
                     }, editor.regexIndex + delta < 0 || editor.regexIndex + delta >= regexes.length, { key: delta })),
                     button('删除正则', () => { changeDocument(next => { next.extensions.regex_scripts.splice(editor.regexIndex, 1); }); setEditor(current => ({ ...current, regexIndex: Math.max(0, current.regexIndex - 1) })); })))),
+                editor.tab === 'scripts' && h('div', { className: 'stc-editor-form' },
+                  h('p', { className: 'stc-muted' }, '管理 extensions.tavern_helper.scripts 中的内嵌助手脚本。启用的脚本将在 QuickJS 受限沙箱中执行生成期事件、ToolManager 工具注册与回复后处理。'),
+                  ...(Array.isArray(doc.extensions?.tavern_helper?.scripts) && doc.extensions.tavern_helper.scripts.length
+                    ? doc.extensions.tavern_helper.scripts.map((item, idx) => h('div', { key: item.id || idx, className: 'stc-prompt-row' },
+                      check('启用 ' + (item.name || item.id || ('脚本 ' + (idx + 1))), item.enabled === true, value => changeDocument(next => {
+                        const target = next.extensions?.tavern_helper?.scripts?.[idx];
+                        if (target) target.enabled = value;
+                      })),
+                      h('span', { className: 'stc-muted' }, formatBytes(new TextEncoder().encode(String(item.content || '')).byteLength))))
+                    : [h('p', { key: 'empty', className: 'stc-muted' }, '当前预设未包含内嵌酒馆助手脚本。')])),
                 editor.tab === 'json' && h('div', { className: 'stc-editor-form' },
                   h('p', { className: 'stc-muted' }, '编辑完整预设，包括 SPreset、助手脚本和未映射字段。切换回表单时解析 JSON；校验和保存只做静态检查，不执行脚本或调用模型。'),
                   field('预设 JSON', editor.text, text => setEditor({ ...editor, text, dirty: true, report: null, error: '' }), { multiline: true, code: true, rows: 22 })))),
