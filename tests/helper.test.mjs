@@ -5,6 +5,7 @@ import { compilePreset, inspectPreset, processOutput } from '../lib/preset.mjs';
 import { compilerMaterials } from '../lib/materials.mjs';
 import { runCompiler } from '../lib/worker-client.mjs';
 import { materials, preset } from './fixtures/materials.mjs';
+import { unavailableBackendRoutes, MAX_REPORTED_BACKEND_ROUTES } from '../lib/helper.mjs';
 
 const settings = { model: { provider: 'fixture', model: 'story' } };
 const doc = (...scripts) => ({ ...structuredClone(preset), extensions: { ...structuredClone(preset.extensions),
@@ -271,4 +272,49 @@ test('original Izumi 1029 preset runs unmodified through generic bundled helper 
     toolCalls: [{ id: 'c1', name: 'izumi_content', arguments: JSON.stringify({ content: '小此看着ㄍㄠ ㄓㄨㄥㄕㄠˇㄋㄩˇ的娇\u200B嫩\n<IzumiEdit>\n新建 记忆\n</IzumiEdit>' }) }],
   });
   assert.equal(restored.text.trim(), '小此看着高中少女的娇嫩');
+});
+
+test('backend route scan reports only unsupported same-origin /api/ literals, deduplicated and sorted', () => {
+  const source = [
+    `const a = '/api/worldinfo/edit'; const b = "/api/chats/get"; const c = \`/api/chats/get\`;`,
+    `const ok = '/api/backends/chat-completions/generate';`,
+    `const nested = '/api/backends/chat-completions/generate/extra';`,
+    `const dyn = \`/api/characters/\${id}\`; const trailing = '/api/settings/get/';`,
+    `const prose = 'see the /api/ docs'; const bare = '/api/'; const other = '/apiary/x'; const url = 'https://example.com/api/x';`,
+  ].join('\n');
+  assert.deepEqual(unavailableBackendRoutes(source), [
+    '/api/backends/chat-completions/generate/extra', '/api/characters', '/api/chats/get', '/api/settings/get', '/api/worldinfo/edit',
+  ]);
+  assert.deepEqual(unavailableBackendRoutes(''), []);
+  assert.deepEqual(unavailableBackendRoutes(undefined), []);
+});
+
+test('bundled helper reports unavailable tavern backend routes in the import report without blocking', () => {
+  const bundle = (extra) => [
+    `(() => {`,
+    `  const panel = document.createElement('div'); document.body.appendChild(panel);`,
+    `  const ctx = SillyTavern.getContext();`,
+    `  ctx.eventSource.on(ctx.eventTypes.CHAT_COMPLETION_PROMPT_READY, () => {});`,
+    extra,
+    `})();`,
+  ].join('\n');
+  const withRoutes = inspectPreset(doc(bundle(`fetch('/api/chats/get', { method: 'POST' }); fetch('/api/worldinfo/edit', { method: 'POST' });`)));
+  assert.equal(withRoutes.blockers.length, 0);
+  const warning = withRoutes.warnings.find(text => text.includes('酒馆后端接口'));
+  assert.ok(warning, 'missing backend route warning');
+  assert.match(warning, /\/api\/chats\/get/);
+  assert.match(warning, /\/api\/worldinfo\/edit/);
+  assert.match(warning, /静态引用扫描/);
+
+  const generateOnly = inspectPreset(doc(bundle(`fetch('/api/backends/chat-completions/generate', { method: 'POST' });`)));
+  assert.equal(generateOnly.warnings.some(text => text.includes('酒馆后端接口')), false);
+
+  const none = inspectPreset(doc(bundle('')));
+  assert.equal(none.warnings.some(text => text.includes('酒馆后端接口')), false);
+
+  const many = Array.from({ length: MAX_REPORTED_BACKEND_ROUTES + 3 }, (_, i) => `'/api/route${String(i).padStart(2, '0')}'`).join(', ');
+  const capped = inspectPreset(doc(bundle(`void [${many}];`)));
+  const cappedWarning = capped.warnings.find(text => text.includes('酒馆后端接口'));
+  assert.match(cappedWarning, new RegExp('等 ' + (MAX_REPORTED_BACKEND_ROUTES + 3) + ' 个'));
+  assert.equal((cappedWarning.match(/\/api\/route\d\d/g) || []).length, MAX_REPORTED_BACKEND_ROUTES);
 });
