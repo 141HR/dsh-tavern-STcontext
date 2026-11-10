@@ -121,7 +121,7 @@ SPreset 请求改写后，完整历史、输入、人物、世界书、写作要
 
 跨仓库联调额外设置 `STCONTEXT_HOST_REPO` 为新版上游 Tavern 工作区路径，并用该宿主的 `bin/test-tavern.mjs` 运行本插件的 `tests/host-smoke.test.mjs`。测试覆盖实际宿主材料导出、统一生成器、正文替换及失败输入补全、原生会话同步和起点结算，模型回包使用测试桩，存档只在内存中。默认使用最小测试预设；可额外设置 `STCONTEXT_PRESET_FIXTURE` 验证已有的昆仑适配预设。插件的 `generation.test.mjs` 在设置 `DSH_BOOT_MODULE` 时还会验证真实 DSH LLM 服务。需要可用的 DSH Session 测试运行时；可显式指定 `DSH_BOOT_MODULE`。
 
-设置 `STCONTEXT_HOST_REPO` 后，`tests/host-generation.test.mjs` 还会验证新正文从宿主准备、STcontext 编译、工具返回到保存和一次结算的完整链路；此测试使用最小测试预设，不需要用户预设文件，并覆盖直接生成、前台检索后生成、冻结配置及回执复用。
+设置 `STCONTEXT_HOST_REPO` 后，`tests/host-generation.test.mjs` 还会验证新正文从宿主准备、STcontext 编译、工具返回到保存和一次结算的完整链路；此测试使用最小测试预设，不需要用户预设文件，并覆盖直接生成、前台检索后生成、冻结配置及回执复用。再设置 `STCONTEXT_IZUMI_FIXTURE` 为本地打包型助手预设（含 UI、生成钩子与 ToolManager 的约 1.5 MiB 单脚本，例如 Izumi 1029）的路径，同一测试文件会让该文件原样经过宿主的分片上传、配置冻结、编译、ToolManager 回包格式化和结算；测试只启用其输出工具开关，不把文件复制进仓库。两者共用 `tests/fixtures/host-harness.mjs` 的宿主装配。
 
 同时设置 `DSH_BOOT_MODULE` 和 `STCONTEXT_HOST_REPO` 后，`tests/host-loading.test.mjs` 会通过真实 Cordis 和 Tavern 保护入口验证插件加载、预设导入、卸载与重新加载，并覆盖有、无可选 `tokenMeter` 服务的环境。
 
