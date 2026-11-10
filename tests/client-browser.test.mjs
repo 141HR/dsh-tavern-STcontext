@@ -39,7 +39,10 @@ test('sidebar, overlay and native settings reach all content in short and narrow
             { identifier: 'main', name: '主提示词', role: 'system', content: '你是叙事助手。保持人物动机一致，沿用 {{user}} 的视角。', injection_trigger: ['regenerate'] },
             ...Array.from({ length: 10 }, (_, i) => ({ identifier: 'rule-' + i, name: '叙事规则 ' + (i + 1), role: 'system', content: '规则 ' + i })),
             { identifier: 'chatHistory', marker: true, name: '聊天历史' },
-          ], notes: '保留扩展和未知字段', extensions: { regex_scripts: [{ scriptName: '清理输出', findRegex: '/X/g', replaceString: 'Y', placement: [2] }] } };
+          ], notes: '保留扩展和未知字段', extensions: {
+            regex_scripts: [{ scriptName: '清理输出', findRegex: '/X/g', replaceString: 'Y', placement: [2] }],
+            tavern_helper: { scripts: [{ type: 'folder', name: '助手目录', scripts: [{ id: 'child', name: '内嵌脚本', enabled: true, content: 'void 0;' }] }] },
+          } };
           doc.prompt_order = [{ character_id: 100001, order: doc.prompts.map(prompt => ({ identifier: prompt.identifier, enabled: true })) }];
           const text = JSON.stringify(doc), upload = await store.begin({ name: '测试预设.json', size: text.length });
           store.chunk({ id: upload.id, index: 0, text }); await store.finish(upload);
@@ -139,6 +142,14 @@ test('sidebar, overlay and native settings reach all content in short and narrow
           await editor.getByRole('checkbox', { name: '合并相邻系统消息', exact: true }).check();
           await editor.getByRole('tab', { name: '正则规则', exact: true }).click();
           await editor.getByRole('textbox', { name: '替换文本', exact: true }).fill('ZZ');
+          await editor.getByRole('tab', { name: '助手脚本', exact: true }).click();
+          const folder = editor.getByRole('checkbox', { name: '启用 助手目录', exact: true });
+          const script = editor.getByRole('checkbox', { name: '启用 助手目录 / 内嵌脚本', exact: true });
+          assert.equal(await folder.isChecked(), true);
+          await folder.uncheck(); assert.equal(await script.isDisabled(), true);
+          await folder.check(); await script.uncheck();
+          const scriptMetrics = await area.evaluate(element => ({ width: element.clientWidth, scrollWidth: element.scrollWidth }));
+          assert.ok(scriptMetrics.scrollWidth <= scriptMetrics.width + 1, 'script tree must not overflow horizontally');
           await editor.getByRole('tab', { name: '完整 JSON', exact: true }).click();
           const raw = editor.getByRole('textbox', { name: '预设 JSON', exact: true });
           const draft = await raw.inputValue();
@@ -154,6 +165,7 @@ test('sidebar, overlay and native settings reach all content in short and narrow
           assert.equal(savedDoc.prompt_order[0].order[0].identifier, 'rule-0');
           assert.equal(savedDoc.temperature, .75); assert.equal(savedDoc.top_p, .9); assert.equal(savedDoc.squash_system_messages, true);
           assert.equal(savedDoc.extensions.regex_scripts[0].replaceString, 'ZZ');
+          assert.equal(savedDoc.extensions.tavern_helper.scripts[0].scripts[0].enabled, false);
           assert.equal(savedDoc.notes, doc.notes);
           const unsaved = JSON.stringify({ ...savedDoc, notes: '暂存草稿' });
           await raw.fill(unsaved);
