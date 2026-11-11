@@ -89,3 +89,17 @@ for (const mode of ['plugin-direct', 'plugin-tool-call']) test(`upstream ${mode}
   assert.equal(saved.displayText, '<details>思考:计划</details>她推开了门。');
   assert.equal((await result.call('request', { gameId: 'session' })).report.outputProcessing?.projection, 'host');
 });
+
+// M2：play 停靠区建议取数——宿主侧从模型回包提取 advice/option，dock/read 返回 chips。
+for (const mode of ['plugin-direct', 'plugin-tool-call']) test(`upstream ${mode}: dock/read returns extracted suggestion chips`, {
+  skip: !process.env.STCONTEXT_HOST_REPO,
+}, async () => {
+  const presetText = JSON.stringify({ prompts: [{ identifier: 'chatHistory', marker: true }],
+    prompt_order: [{ character_id: 100001, order: [{ identifier: 'chatHistory', enabled: true }] }],
+    extensions: { regex_scripts: [] } });
+  const result = await runHostGeneration({ mode, presetText, async *stream() {
+    yield { type: 'text-delta', index: 0, text: '<advice>去图书馆</advice>正文<options><option>选项A</option></options>' };
+    yield { type: 'finish', reason: { kind: 'stop' } };
+  } });
+  assert.deepEqual(await result.call('dock/read', { gameId: 'session' }), ['去图书馆', '选项A']);
+});

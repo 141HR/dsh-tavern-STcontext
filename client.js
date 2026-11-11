@@ -129,6 +129,9 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
 .stc-panel h2{font-size:20px}}
 @media(max-width:480px){.stc-panel{padding:16px}}
 @media(prefers-reduced-motion:reduce){.stc-panel .stc-button{transition:none}}
+.stc-dock{display:flex;flex-wrap:wrap;gap:6px;padding:6px 0;max-height:40vh;overflow:auto}
+.stc-dock-chip{font:inherit;font-size:12px;line-height:1.4;padding:5px 12px;border:1px solid var(--dsw-alias-border-l2,#e3e4eb);border-radius:999px;background:var(--dsw-specific-input-major,#fff);color:inherit;cursor:pointer;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;transition:background .15s,border-color .15s}
+.stc-dock-chip:hover{border-color:var(--dsh-tavern-accent,#5956c9);background:var(--dsh-tavern-accent-soft,#eeedf9)}
 `;
         function download(name, text) {
           const url = URL.createObjectURL(new Blob([text], { type: 'application/json;charset=utf-8' }));
@@ -558,6 +561,20 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
                   : '本轮使用 STcontext 预设输出正则，宿主正则已关闭。'),
               h('pre', null, request))));
         }
+        function Dock({ gameId }) {
+          const [items, setItems] = React.useState([]);
+          React.useEffect(() => {
+            let alive = true;
+            const load = () => call('dock/read', { gameId }).then(v => { if (alive) setItems(Array.isArray(v) ? v : []); }).catch(() => {});
+            let stop = null;
+            if (typeof ui.watchTurnState === 'function') stop = ui.watchTurnState(gameId, load);
+            else load();
+            return () => { alive = false; if (typeof stop === 'function') stop(); };
+          }, [gameId]);
+          if (!items.length) return null;
+          return h('div', { className: 'stc-dock', role: 'group', 'aria-label': 'STcontext 建议' },
+            items.map((text, index) => h('button', { key: index, className: 'stc-dock-chip', title: text, onClick: () => ui.submitInput({ gameId, text }) }, text)));
+        }
         ctx.effect(() => ctx.slots.inject('settings.section', () => ctx.slots.register({
           name: 'settings.section', id: 'dsh-tavern-stcontext', order: 115, label: () => 'STcontext',
         }, () => h(Panel, { settingsPage: true }))), 'STcontext: settings section');
@@ -568,6 +585,9 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
             ui.openOverlay({ gameId, render: ({ close }) => h(Panel, { gameId, close }) });
           },
         });
+        if (typeof ui.registerComposerSlot === 'function') {
+          ui.registerComposerSlot({ id: 'stcontext-dock', modes: ['play'], render: ({ sessionId }) => h(Dock, { gameId: sessionId }) });
+        }
       },
     };
   },
