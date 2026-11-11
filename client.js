@@ -132,6 +132,10 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
 .stc-dock{display:flex;flex-wrap:wrap;gap:6px;padding:6px 0;max-height:40vh;overflow:auto}
 .stc-dock-chip{font:inherit;font-size:12px;line-height:1.4;padding:5px 12px;border:1px solid var(--dsw-alias-border-l2,#e3e4eb);border-radius:999px;background:var(--dsw-specific-input-major,#fff);color:inherit;cursor:pointer;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;transition:background .15s,border-color .15s}
 .stc-dock-chip:hover{border-color:var(--dsh-tavern-accent,#5956c9);background:var(--dsh-tavern-accent-soft,#eeedf9)}
+.stc-think{margin:8px 0;border:1px solid var(--dsw-alias-border-l2,#e3e4eb);border-radius:10px;background:var(--dsw-specific-input-major,#fff);overflow:hidden}
+.stc-think-summary{cursor:pointer;padding:8px 12px;font-size:13px;font-weight:600;color:var(--dsw-alias-label-secondary,#717583);list-style:none;user-select:none}
+.stc-think-summary::-webkit-details-marker{display:none}
+.stc-think-body{padding:8px 12px;border-top:1px solid var(--dsw-alias-border-l2,#e3e4eb);font-size:13px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere;max-height:40vh;overflow:auto;color:var(--dsw-alias-label-secondary,#717583)}
 `;
         function download(name, text) {
           const url = URL.createObjectURL(new Blob([text], { type: 'application/json;charset=utf-8' }));
@@ -575,6 +579,13 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
           return h('div', { className: 'stc-dock', role: 'group', 'aria-label': 'STcontext 建议' },
             items.map((text, index) => h('button', { key: index, className: 'stc-dock-chip', title: text, onClick: () => ui.submitInput({ gameId, text }) }, text)));
         }
+        function ThinkingPanel({ content }) {
+          const text = String(content ?? '').trim();
+          if (!text) return null;
+          return h('details', { className: 'stc-think' },
+            h('summary', { className: 'stc-think-summary' }, '💭 思考过程'),
+            h('div', { className: 'stc-think-body' }, text));
+        }
         ctx.effect(() => ctx.slots.inject('settings.section', () => ctx.slots.register({
           name: 'settings.section', id: 'dsh-tavern-stcontext', order: 115, label: () => 'STcontext',
         }, () => h(Panel, { settingsPage: true }))), 'STcontext: settings section');
@@ -587,6 +598,12 @@ body[data-ds-dark-theme] .stc-panel{--stc-surface:var(--dsw-specific-input-major
         });
         if (typeof ui.registerComposerSlot === 'function') {
           ui.registerComposerSlot({ id: 'stcontext-dock', modes: ['play'], render: ({ sessionId }) => h(Dock, { gameId: sessionId }) });
+        }
+        if (typeof ui.registerTextMarker === 'function') {
+          ui.registerTextMarker({
+            pattern: /<(think|thinking|konatan_planning~)(?:\s[^>]*)?>([\s\S]*?)<\/\1\s*>/g,
+            render: ({ groups }) => h(ThinkingPanel, { content: groups?.[1] || '' }),
+          });
         }
       },
     };
