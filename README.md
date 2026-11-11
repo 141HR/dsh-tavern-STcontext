@@ -84,6 +84,7 @@ Copy-Item -LiteralPath '.\lib' -Destination $stcontextTarget -Recurse -Force
 - 昆仑 IDE 1.2r 直接运行导入文件里的助手脚本，支持工具描述承载上下文及 buffer_content 解包；已删除按脚本指纹解析模板的昆仑专用适配器。测试覆盖更改脚本名称和指纹后的同一行为。
 - 面板不再提供模式选择；旧 adapter 设置自动忽略并在下次保存时移除。不支持的内嵌扩展会报错，不回退到忽略扩展的路径。
 - 支持助手事件、registerMacroLike、本次临时变量、ready/pagehide 生命周期及虚拟 fetch。fetch 只在 QuickJS 内处理一次生成请求/完整回包，没有网络能力，不修改宿主全局 fetch。已知 SPreset 引擎加载器按完整内容指纹映射到内置接口；其他远程加载、DOM 操作、日志上传和工具 action 不执行。
+- 客户端显示扩展（能力缺失不注册、不影响生成）：play 建议停靠区经 `registerComposerSlot` 提取回包 `<advice>`/`<option>` 为 chips、点击经 `submitInput` 发送；思维链面板经 `registerTextMarker` 把已知思维链标签类（think/thinking/konatan_planning~）渲染为折叠面板，依赖 bodyProjection 的 display 通道保留思维链。脚本级 DOM 美化不在沙箱复现，详见 [兼容契约](docs/compatibility.md)。
 
 导入报告会定位启用条目中的未知宏、脚本语法错误、未实现的扩展选项与可静态识别的协议要求。导入不执行预设脚本，不调用模型；不兼容文件仍可保存和导出原文件。静态检查不能证明任意程序的所有分支，运行时还会校验最终请求与材料完整性。
 
