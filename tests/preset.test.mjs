@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { parsePreset, compilePreset, processOutput, inspectPreset } from '../lib/preset.mjs';
+import { parsePreset, compilePreset, processOutput, inspectPreset, finalOutputRules } from '../lib/preset.mjs';
 import { createMacroEnvironment, renderMacros } from '../lib/macros.mjs';
 import { runCompiler } from '../lib/worker-client.mjs';
 
@@ -146,4 +146,55 @@ test('regeneration activates only empty or regenerate prompt triggers', () => {
   assert.doesNotMatch(normalText, /trigger:regen-only|trigger:continue-only/);
   for (const name of ['normal-only', 'both', 'empty']) assert.ok(normalText.includes('trigger:' + name));
   assert.equal(current.report.trigger, 'normal');
+});
+
+// bodyProjection（M1）：能力开启时交回未跑输出正则的原文 + 最终规则，宿主分通道投影。
+function projectionPreset() {
+  const doc = preset();
+  doc.extensions.regex_scripts = [
+    rule('/<think>[\\s\\S]*?<\\/think>/g', '', { promptOnly: true, markdownOnly: false }),
+    rule('/<think>([\\s\\S]*?)<\\/think>/g', '<details><summary>思考</summary>$1</details>', { markdownOnly: true, promptOnly: false }),
+  ];
+  return doc;
+}
+test('bodyProjection hands back un-regexed source plus native rules', () => {
+  const doc = projectionPreset();
+  const result = processOutput({ document: doc, response: { text: '<think>计划</think>她推开了门。' }, projectReply: true });
+  assert.equal(result.text, '<think>计划</think>她推开了门。');
+  assert.ok(Array.isArray(result.regexScripts));
+  assert.equal(result.regexScripts.length, 2);
+  assert.equal(result.metadata.projected, true);
+  assert.equal(result.metadata.outputRegexPasses, 0);
+});
+test('without bodyProjection the merged pass still strips and returns text only', () => {
+  const doc = projectionPreset();
+  const result = processOutput({ document: doc, response: { text: '<think>计划</think>她推开了门。' } });
+  assert.equal(result.text, '她推开了门。');
+  assert.equal(result.regexScripts, undefined);
+  assert.equal(result.metadata.outputRegexPasses, 1);
+  assert.equal(result.metadata.projected, undefined);
+});
+test('finalOutputRules prefers resolved rules, falls back to native, null on over-limit', () => {
+  const doc = projectionPreset();
+  assert.equal(finalOutputRules(doc, null).length, 2);
+  assert.equal(finalOutputRules(doc, {}).length, 2);
+  const resolved = [rule('/正文/g', 'BODY')];
+  const picked = finalOutputRules(doc, { finalRegexScripts: resolved });
+  assert.equal(picked.length, 1);
+  assert.equal(picked[0].replaceString, 'BODY');
+  const big = preset();
+  big.extensions.regex_scripts = Array.from({ length: 257 }, () => rule('/x/g', 'y'));
+  assert.equal(finalOutputRules(big, null), null);
+});
+test('bodyProjection over-limit rules fall back to the merged pass', () => {
+  const doc = preset();
+  doc.extensions.regex_scripts = Array.from({ length: 257 }, () => rule('/x/g', 'y'));
+  const result = processOutput({ document: doc, response: { text: 'x 正文' }, projectReply: true });
+  assert.equal(result.regexScripts, undefined);
+  assert.equal(result.metadata.outputRegexPasses, 1);
+  assert.equal(result.text, 'y 正文');
+});
+test('bodyProjection empty source still rejects instead of handing back empty text', () => {
+  const doc = projectionPreset();
+  assert.throws(() => processOutput({ document: doc, response: { text: '' }, projectReply: true }), /未替换宿主正文/);
 });

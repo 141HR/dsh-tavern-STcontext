@@ -15,7 +15,7 @@ export const hostRules = {
   card: { id: 'card', placement: [2], findRegex: '/PRESET/g', replaceString: 'DISPLAY', markdownOnly: true },
 };
 
-export async function runHostGeneration({ mode, presetText, stream, userText = '继续', hostRepo = process.env.STCONTEXT_HOST_REPO }) {
+export async function runHostGeneration({ mode, presetText, stream, userText = '继续', bodyProjection = false, hostRepo = process.env.STCONTEXT_HOST_REPO }) {
   const host = path => import(pathToFileURL(resolve(hostRepo, 'tavern-plugin/lib', path)).href);
   const [{ createTurnOrchestrator }, { createStoryTimeline }, { createForegroundFrameBuilder },
     { createPluginBodyGeneration }, { createBodyGenerationProviders }, { projectReplyLayers, projectReplyHistory },
@@ -51,7 +51,7 @@ export async function runHostGeneration({ mode, presetText, stream, userText = '
     resolvePresetRegexScripts: async () => [presetRule, overriddenRule, contextRule] });
   let pluginData;
   const handlers = new Map();
-  apply({ get: () => undefined, tavern: { capabilities: { bodyGeneration: 1 }, handle: (name, callback) => handlers.set(name, callback),
+  apply({ get: () => undefined, tavern: { capabilities: { bodyGeneration: 1, ...(bodyProjection ? { bodyProjection: 1 } : {}) }, handle: (name, callback) => handlers.set(name, callback),
     getPluginDataLimits: () => ({ maxBytes: 256 * 1024 * 1024 }),
     readPluginData: async () => copy(pluginData), savePluginData: async ({ data }) => { pluginData = copy(data); },
     bodyGenerator: entry => providers.register('dsh-tavern-STcontext', entry) },

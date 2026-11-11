@@ -51,11 +51,14 @@ export function apply(ctx) {
     const active = restoreGenerationConfig(config);
     if (!active?.document || !active?.settings) throw new Error('宿主未提供冻结的预设配置，请重新生成本轮');
     selectGenerationModel(active.settings.model);
+    const projectReply = ctx.tavern.capabilities?.bodyProjection === 1;
     const compiled = await runCompiler('compile', { document: active.document, materials: compilerMaterials(materials), settings: active.settings }, { signal });
     const report = { ...compiled.report, preset: active.name, presetDigest: compiled.presetDigest, historyMessages: compiled.historyMessages,
       operationId: materials.operationId, reason: materials.reason,
-      ...(typeof materials.outputProcessing?.hostRegex === 'boolean'
-        ? { outputProcessing: { hostRegex: materials.outputProcessing.hostRegex } } : {}) };
+      outputProcessing: {
+        ...(typeof materials.outputProcessing?.hostRegex === 'boolean' ? { hostRegex: materials.outputProcessing.hostRegex } : {}),
+        projection: projectReply ? 'host' : 'plugin',
+      } };
     const json = JSON.stringify({ report, logicalMessages: compiled.logicalMessages, request: compiled.request }, null, 2);
     previews.delete(materials.gameId);
     previews.set(materials.gameId, { json, report, createdAt: Date.now() });
@@ -63,8 +66,9 @@ export function apply(ctx) {
     const response = await generateBody({ request: compiled.request, signal });
     signal?.throwIfAborted();
     const result = await runCompiler('output', { document: active.document, response, helperState: compiled.helperState,
-      toolNames: (compiled.request.tools || []).map(tool => tool.name) }, { signal });
+      toolNames: (compiled.request.tools || []).map(tool => tool.name), projectReply }, { signal });
     signal?.throwIfAborted();
+    if (projectReply && Array.isArray(result.regexScripts)) return { text: result.text, regexScripts: result.regexScripts };
     return { text: result.text };
   }
   if (capable()) {

@@ -67,3 +67,25 @@ for (const mode of ['plugin-direct', 'plugin-tool-call']) test(`upstream ${mode}
   assert.equal(result.saved.sourceText, '测试正文XX');
   assert.equal(result.projected, result.saved.text);
 });
+
+// bodyProjection（M1）：插件交回未跑正则的原文 + 规则，宿主从同一原文分 prompt/display 通道。
+// 需含 c302e6cee 的新宿主；思维链在 display 保留并美化、在 prompt（模型上下文）剥离。
+for (const mode of ['plugin-direct', 'plugin-tool-call']) test(`upstream ${mode}: bodyProjection splits prompt/display channels from one source`, {
+  skip: !process.env.STCONTEXT_HOST_REPO,
+}, async () => {
+  const presetText = JSON.stringify({ prompts: [{ identifier: 'chatHistory', marker: true }],
+    prompt_order: [{ character_id: 100001, order: [{ identifier: 'chatHistory', enabled: true }] }],
+    extensions: { regex_scripts: [
+      { id: 'cot-strip', placement: [2], findRegex: '/<think>[\\s\\S]*?<\\/think>/g', replaceString: '', promptOnly: true, markdownOnly: false },
+      { id: 'cot-display', placement: [2], findRegex: '/<think>([\\s\\S]*?)<\\/think>/g', replaceString: '<details>思考:$1</details>', markdownOnly: true, promptOnly: false },
+    ] } });
+  const result = await runHostGeneration({ mode, presetText, bodyProjection: true, async *stream() {
+    yield { type: 'text-delta', index: 0, text: '<think>计划</think>她推开了门。' };
+    yield { type: 'finish', reason: { kind: 'stop' } };
+  } });
+  const { saved } = result;
+  assert.equal(saved.sourceText, '<think>计划</think>她推开了门。');
+  assert.equal(saved.text, '她推开了门。');
+  assert.equal(saved.displayText, '<details>思考:计划</details>她推开了门。');
+  assert.equal((await result.call('request', { gameId: 'session' })).report.outputProcessing?.projection, 'host');
+});
